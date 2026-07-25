@@ -55,17 +55,24 @@ npm run build:web && npm run server
 
 ## App desktop (Electron)
 
-Para o time usar **sem instalar Node** — um instalador / AppImage:
+Para o time usar **sem instalar Node** — um instalador por OS:
+
+| OS | Artefato | Como gerar |
+|----|----------|------------|
+| Linux | `.AppImage` | `npm run electron:dist:linux` (daqui no WSL funciona) |
+| Windows | `.exe` (NSIS) | `npm run electron:dist:win` **no Windows** (ou CI) |
+| macOS | `.dmg` | `npm run electron:dist:mac` **no Mac** (ou CI) |
+
+**Melhor caminho pros 3 de uma vez:** GitHub Actions  
+Actions → **Desktop builds** → *Run workflow* (ou tag `v0.1.0`).  
+Sobe artefatos `spotidraft-linux` / `spotidraft-win` / `spotidraft-mac`.
 
 ```bash
 npm install
-npm run electron:dist
+npm run electron:dist:linux   # local neste WSL
 ```
 
-Artefatos em `release/` (AppImage no Linux, NSIS no Windows, DMG no Mac).  
-Build **na mesma OS** que o time usa (ex.: Windows → gerar o `.exe` no Windows).
-
-Dev com janela Electron (ainda precisa das deps locais na 1ª vez):
+Dev com janela Electron:
 
 ```bash
 npm run electron:dev
@@ -75,6 +82,10 @@ Dados da sessão ficam em:
 - Linux: `~/.config/Spotidraft/`
 - macOS: `~/Library/Application Support/Spotidraft/`
 - Windows: `%APPDATA%\\Spotidraft\\`
+
+> Cross-compile: no Linux **não** dá pra fazer DMG Mac de verdade; Windows às vezes com Wine, mas é frágil. Use CI ou a máquina do OS alvo.
+>
+> Mac sem notarização da Apple: o Gatekeeper avisa na 1ª abertura (botão direito → Abrir).
 
 ## CLI
 

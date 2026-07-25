@@ -24,7 +24,10 @@
     "electron:browsers": "node scripts/fetch-playwright-browsers.mjs",
     "electron:prepare": "npm run build:web && npm run electron:yt-dlp && npm run electron:browsers",
     "electron:dev": "npm run build:web && electron .",
-    "electron:dist": "npm run electron:prepare && electron-builder --publish never"
+    "electron:dist": "npm run electron:prepare && electron-builder --publish never",
+    "electron:dist:linux": "npm run electron:prepare && electron-builder --linux AppImage --publish never",
+    "electron:dist:win": "npm run electron:prepare && electron-builder --win nsis --publish never",
+    "electron:dist:mac": "npm run electron:prepare && electron-builder --mac dmg --publish never"
   },
   "engines": {
     "node": ">=22"
