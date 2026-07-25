@@ -1,0 +1,30 @@
+{
+  "name": "spotidraft",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Spotidraft — YouTube to Spotify for Creators drafts",
+  "bin": {
+    "podcast-publisher": "./bin/podcast-publisher.js"
+  },
+  "scripts": {
+    "start": "node src/server/index.js",
+    "login": "node bin/podcast-publisher.js login",
+    "ingest": "node bin/podcast-publisher.js ingest",
+    "package": "node bin/podcast-publisher.js package",
+    "enqueue": "node bin/podcast-publisher.js enqueue",
+    "worker": "node bin/podcast-publisher.js worker",
+    "status": "node bin/podcast-publisher.js status",
+    "server": "node src/server/index.js",
+    "dev:web": "npm --prefix web run dev",
+    "build:web": "npm --prefix web run build",
+    "test": "node --test test/**/*.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "commander": "^14.0.0",
+    "playwright": "^1.55.0"
+  }
+}

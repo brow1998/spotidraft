@@ -1,0 +1,12 @@
+node_modules/
+data/
+profiles/
+*.sqlite
+.DS_Store
+curl.txt
+*.log
+web/dist/
+web/dist-ssr/
+.env
+.env.*
+!.env.example
