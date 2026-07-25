@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { PROFILE_DIR, ROOT } from "./paths.js";
+import { PROFILE_DIR, DATA_DIR } from "./paths.js";
 
 export const COOKIES_PATH = path.join(PROFILE_DIR, "cookies.json");
-export const CONFIG_PATH = path.join(ROOT, "data", "config.json");
+export const CONFIG_PATH = path.join(DATA_DIR, "config.json");
 
 /** Parse a curl -b / Cookie header into Playwright cookie objects. */
 export function parseCookieHeader(header) {

@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   cancelJob,
   claimNextPending,
@@ -34,10 +35,9 @@ import {
   fetchCreatorsCatalog,
   isValidShowName,
 } from "../adapters/creators-manage.js";
-import { DOWNLOADS_DIR, DATA_DIR, ROOT } from "../paths.js";
+import { DOWNLOADS_DIR, DATA_DIR, WEB_DIST } from "../paths.js";
 
 const PORT = Number(process.env.PORT || 8787);
-const WEB_DIST = path.join(ROOT, "web", "dist");
 const CATALOG_CACHE_PATH = path.join(DATA_DIR, "creators-catalog.json");
 
 function json(res, status, body, extraHeaders = {}) {
@@ -627,6 +627,43 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.error(`[spotidraft] http://127.0.0.1:${PORT}`);
-});
+/**
+ * Start HTTP API + static UI. port=0 picks a free port (Electron).
+ * @returns {Promise<{ server: import('node:http').Server, port: number, url: string }>}
+ */
+export function startServer({ port = PORT, host = "127.0.0.1" } = {}) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off("listening", onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      const addr = server.address();
+      const p = typeof addr === "object" && addr ? addr.port : port;
+      const url = `http://${host}:${p}`;
+      console.error(`[spotidraft] ${url}`);
+      resolve({ server, port: p, url });
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, host);
+  });
+}
+
+function isDirectRun() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(path.resolve(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectRun()) {
+  startServer().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

@@ -23,11 +23,19 @@ Isso precisa de **disco grande**, **CPU/rede estáveis** e **sessão longa** —
 
 ## Caminhos seguintes
 
-### A) Executável local (preferido)
+### A) Executável local (Electron) — preferido
 
-1. Manter Node + scripts (`npm run server` / `dev:web`) — já funciona  
-2. Empacotar com **Tauri** ou **Electron**: sobe API embutida + UI, ícone no SO  
-3. Dependências nativas: yt-dlp + Chromium/Playwright (ou Chrome do sistema)
+```bash
+npm install
+npm run electron:dist   # gera release/Spotidraft-*.AppImage | Setup.exe | .dmg
+```
+
+O app sobe a API embutida, abre a UI e guarda sessão em `userData` do SO.  
+Empacota **yt-dlp** + **Chromium (Playwright)** — o instalador fica grande (~200–400 MB), mas o time não precisa instalar Node.
+
+Gere o build **no SO do time** (Windows → `.exe` no Windows).
+
+Dependência externa útil: **ffmpeg** no PATH (merge de formatos). Sem ffmpeg, use “só áudio” ou instale ffmpeg no PC.
 
 ### B) Hospedagem “leve” (só meta / fila)
 

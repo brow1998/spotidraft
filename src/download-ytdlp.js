@@ -6,6 +6,10 @@ import { DOWNLOADS_DIR } from "./paths.js";
 
 const DEFAULT_YT_DLP_CANDIDATES = [
   process.env.YT_DLP,
+  process.env.SPOTIDRAFT_RESOURCES &&
+    `${process.env.SPOTIDRAFT_RESOURCES}/bin/yt-dlp`,
+  process.env.SPOTIDRAFT_RESOURCES &&
+    `${process.env.SPOTIDRAFT_RESOURCES}/bin/yt-dlp.exe`,
   ...[
     process.env.HOME &&
       `${process.env.HOME}/.asdf/installs/python/3.12.11/bin/yt-dlp`,

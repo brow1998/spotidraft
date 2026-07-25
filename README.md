@@ -53,6 +53,29 @@ npm run build:web && npm run server
 # http://127.0.0.1:8787
 ```
 
+## App desktop (Electron)
+
+Para o time usar **sem instalar Node** — um instalador / AppImage:
+
+```bash
+npm install
+npm run electron:dist
+```
+
+Artefatos em `release/` (AppImage no Linux, NSIS no Windows, DMG no Mac).  
+Build **na mesma OS** que o time usa (ex.: Windows → gerar o `.exe` no Windows).
+
+Dev com janela Electron (ainda precisa das deps locais na 1ª vez):
+
+```bash
+npm run electron:dev
+```
+
+Dados da sessão ficam em:
+- Linux: `~/.config/Spotidraft/`
+- macOS: `~/Library/Application Support/Spotidraft/`
+- Windows: `%APPDATA%\\Spotidraft\\`
+
 ## CLI
 
 ```bash
@@ -72,16 +95,18 @@ Cobertura atual: helpers puros (`normalizeChannelInput`, idioma yt-dlp, nomes de
 
 | Caminho | Conteúdo |
 |---------|----------|
-| `data/` | config, fila SQLite, downloads, cache Creators |
-| `profiles/` | browser profile / cookies do Creators |
+| `data/` | config, fila SQLite, downloads, cache Creators (modo CLI/server) |
+| `profiles/` | browser profile / cookies (modo CLI/server) |
+| `vendor/` | yt-dlp + Chromium empacotados (gerados no prepare) |
 
 Idioma dos títulos do YouTube: `YT_LANG=pt` (padrão). O yt-dlp usa o código `pt` (não `pt-BR`).
 
 ## Deploy / 4K longo
 
-Ver [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Resumo: vídeos de horas em 4K **não cabem** em free tier de cloud; o caminho realista é **app local** (e eventualmente binário empacotado).
+Ver [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Resumo: vídeos de horas em 4K **não cabem** em free tier de cloud; use o **app Electron local**.
 
 ## Avisos
 
 - Automação de UI no Creators; cookies são segredo local.
 - Respeite ToS do YouTube / Spotify e direitos do conteúdo.
+- **ffmpeg** no PATH ajuda o yt-dlp a juntar áudio+vídeo; em máquinas sem ffmpeg, prefira “só áudio” ou instale ffmpeg.

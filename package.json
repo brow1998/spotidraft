@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Spotidraft — YouTube to Spotify for Creators drafts",
+  "main": "electron/main.js",
   "bin": {
     "podcast-publisher": "./bin/podcast-publisher.js"
   },
@@ -18,7 +19,12 @@
     "server": "node src/server/index.js",
     "dev:web": "npm --prefix web run dev",
     "build:web": "npm --prefix web run build",
-    "test": "node --test test/**/*.test.js"
+    "test": "node --test test/**/*.test.js",
+    "electron:yt-dlp": "node scripts/fetch-yt-dlp.mjs",
+    "electron:browsers": "node scripts/fetch-playwright-browsers.mjs",
+    "electron:prepare": "npm run build:web && npm run electron:yt-dlp && npm run electron:browsers",
+    "electron:dev": "npm run build:web && electron .",
+    "electron:dist": "npm run electron:prepare && electron-builder --publish never"
   },
   "engines": {
     "node": ">=22"
@@ -26,5 +32,74 @@
   "dependencies": {
     "commander": "^14.0.0",
     "playwright": "^1.55.0"
+  },
+  "devDependencies": {
+    "electron": "^37.10.3",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "app.spotidraft.desktop",
+    "productName": "Spotidraft",
+    "copyright": "Copyright © Spotidraft",
+    "directories": {
+      "output": "release",
+      "buildResources": "electron/assets"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "bin/**/*",
+      "package.json",
+      "node_modules/**/*",
+      "!node_modules/.cache/**/*",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/.bin/**"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/playwright/**",
+      "**/node_modules/playwright-core/**"
+    ],
+    "extraResources": [
+      {
+        "from": "web/dist",
+        "to": "web/dist"
+      },
+      {
+        "from": "vendor/yt-dlp",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/ms-playwright",
+        "to": "ms-playwright",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
   }
 }

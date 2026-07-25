@@ -10,3 +10,6 @@ web/dist-ssr/
 .env
 .env.*
 !.env.example
+vendor/
+release/
+*.AppImage
