@@ -31,7 +31,7 @@ npm --prefix web install
 Sessão Creators (curl do DevTools ou pela UI **Sessão**):
 
 ```bash
-node bin/podcast-publisher.js import-curl ./curl.txt
+node bin/spotidraft.js import-curl ./curl.txt
 ```
 
 ## UI web
@@ -79,8 +79,8 @@ Dados da sessão ficam em:
 ## CLI
 
 ```bash
-node bin/podcast-publisher.js ingest "URL"
-node bin/podcast-publisher.js status
+node bin/spotidraft.js ingest "URL"
+node bin/spotidraft.js status
 ```
 
 ## Testes

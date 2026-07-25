@@ -50,9 +50,9 @@ async function drainWorker({ headless = false, once = false } = {}) {
 export function buildCli() {
   const program = new Command();
   program
-    .name("podcast-publisher")
+    .name("spotidraft")
     .description(
-      "Baixa do YouTube e publica episódios no Spotify for Creators via Playwright"
+      "Spotidraft — YouTube → drafts no Spotify for Creators"
     )
     .option("--headless", "Rodar browser headless", false);
 
