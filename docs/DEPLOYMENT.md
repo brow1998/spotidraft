@@ -25,15 +25,16 @@ Isso precisa de **disco grande**, **CPU/rede estáveis** e **sessão longa** —
 
 ### A) Executável local (Electron) — preferido
 
-```bash
-npm install
-npm run electron:dist   # gera release/Spotidraft-*.AppImage | Setup.exe | .dmg
-```
+| Comando | Saída |
+|---------|--------|
+| `npm run electron:dist:linux` | `release/*.AppImage` |
+| `npm run electron:dist:win` | `release/*Setup*.exe` (rode no Windows) |
+| `npm run electron:dist:mac` | `release/*.dmg` (rode no Mac) |
+
+Ou **GitHub Actions** → workflow *Desktop builds* (matrix ubuntu/windows/macos).
 
 O app sobe a API embutida, abre a UI e guarda sessão em `userData` do SO.  
-Empacota **yt-dlp** + **Chromium (Playwright)** — o instalador fica grande (~200–400 MB), mas o time não precisa instalar Node.
-
-Gere o build **no SO do time** (Windows → `.exe` no Windows).
+Empacota **yt-dlp** + **Chromium (Playwright)** — instalador grande (~200–400 MB), mas o time não precisa de Node.
 
 Dependência externa útil: **ffmpeg** no PATH (merge de formatos). Sem ffmpeg, use “só áudio” ou instale ffmpeg no PC.
 
