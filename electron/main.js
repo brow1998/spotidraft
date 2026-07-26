@@ -42,20 +42,28 @@ function configurePaths() {
   fs.mkdirSync(process.env.SPOTIDRAFT_PROFILE, { recursive: true });
 }
 
+let shutdownServer = null;
+
 async function bootServer() {
-  const { startServer } = await import("../src/server/index.js");
+  const { startServer, stopServer } = await import("../src/server/index.js");
   const started = await startServer({ port: 0, host: "127.0.0.1" });
   httpServer = started.server;
+  shutdownServer = stopServer;
   return started;
 }
 
 function createWindow(url) {
+  // Packaged builds get the icon from electron-builder; in dev the window
+  // (and the Linux taskbar) needs it set explicitly.
+  const iconPath = path.join(PKG_ROOT, "electron", "assets", "icon.png");
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 960,
     minHeight: 640,
     title: "Spotidraft",
+    ...(fs.existsSync(iconPath) ? { icon: iconPath } : {}),
     backgroundColor: "#121212",
     webPreferences: {
       contextIsolation: true,
@@ -100,22 +108,35 @@ if (!gotLock) {
     }
   });
 
-  app.on("window-all-closed", () => {
-    if (httpServer) {
+  app.on("window-all-closed", async () => {
+    // Must go through stopServer: it ends the open SSE streams and any live
+    // Chromium session first. A plain close() would wait on them forever.
+    if (shutdownServer) {
       try {
-        httpServer.close();
+        await shutdownServer();
       } catch {
         /* ignore */
       }
+      httpServer = null;
+      shutdownServer = null;
     }
     if (process.platform !== "darwin") app.quit();
   });
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0 && httpServer) {
-      const addr = httpServer.address();
-      const port = typeof addr === "object" && addr ? addr.port : 8787;
-      createWindow(`http://127.0.0.1:${port}`);
+  app.on("activate", async () => {
+    if (BrowserWindow.getAllWindows().length > 0) return;
+    // On macOS the app stays alive after the last window closes, and we shut the
+    // server down with it — so reopening means booting it again.
+    if (!httpServer) {
+      try {
+        const { url } = await bootServer();
+        return createWindow(url);
+      } catch (e) {
+        return console.error("[spotidraft-electron]", e);
+      }
     }
+    const addr = httpServer.address();
+    const port = typeof addr === "object" && addr ? addr.port : 8787;
+    createWindow(`http://127.0.0.1:${port}`);
   });
 }

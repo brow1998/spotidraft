@@ -4,38 +4,59 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   cancelJob,
-  claimNextPending,
   createJob,
   getEpisode,
   getJob,
-  isCancelRequested,
   listEpisodes,
   listJobs,
-  markCancelled,
-  markFailed,
-  markPublished,
+  jobsWithActiveEpisodes,
+  publishedWithMedia,
+  recoverStaleWork,
   requestCancelEpisode,
   requeueFailed,
   updateEpisodeFields,
   updateJob,
   upsertEpisode,
 } from "../db.js";
+import { formatBytes, releaseEpisodeMedia } from "../cleanup.js";
 import {
-  downloadYoutube,
   listYoutubeVideos,
   fetchYoutubeChannel,
   fetchYoutubeVideoMeta,
-  sourceDirName,
 } from "../download-ytdlp.js";
-import { episodeFromYtdlpMp4 } from "../enqueue-helpers.js";
 import { importFromCurl, loadCookies, loadConfig, saveConfig } from "../session.js";
-import { publishViaCreators } from "../adapters/creators-playwright.js";
+import {
+  channelCacheKey,
+  getCachedChannel,
+  putCachedChannel,
+} from "../channel-cache.js";
 import {
   deleteCreatorsEpisode,
   fetchCreatorsCatalog,
   isValidShowName,
 } from "../adapters/creators-manage.js";
-import { DOWNLOADS_DIR, DATA_DIR, WEB_DIST } from "../paths.js";
+import { closeAllCreatorsSessions } from "../adapters/creators-session.js";
+import { DATA_DIR, WEB_DIST } from "../paths.js";
+import {
+  BOOT_ID,
+  bus,
+  emitEvent,
+  emitLog,
+  eventsSince,
+  lastEventId,
+  recentLogs,
+  serializeSse,
+} from "./events.js";
+import {
+  clearSessionBlock,
+  ensureUploader,
+  finalizeOrphanedJobs,
+  isSessionBlocked,
+  isUploaderRunning,
+  resumeJobs,
+  runImportJob,
+  watchJobToCompletion,
+} from "./pipeline.js";
 
 const PORT = Number(process.env.PORT || 8787);
 const CATALOG_CACHE_PATH = path.join(DATA_DIR, "creators-catalog.json");
@@ -74,9 +95,6 @@ function saveCatalogCache(catalog) {
   return payload;
 }
 
-let workerRunning = false;
-const runningImportJobs = new Set();
-
 function readPackageMeta(metaPath) {
   if (!metaPath || !fs.existsSync(metaPath)) return null;
   try {
@@ -98,7 +116,31 @@ function formatDuration(seconds) {
   return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
+/**
+ * Enriching a row costs 3 stat calls plus a JSON parse. With the queue polled
+ * every couple of seconds that was dozens of synchronous syscalls per second on
+ * the same thread that drives Playwright and yt-dlp.
+ *
+ * updated_at is bumped by every mutation, so it makes an exact cache key: a row
+ * that hasn't changed does no filesystem work at all.
+ */
+const enrichCache = new Map();
+const ENRICH_CACHE_CAP = 500;
+
 function enrichEpisodeRow(r) {
+  const key = `${r.id}:${r.updated_at}`;
+  const hit = enrichCache.get(key);
+  if (hit) return hit;
+
+  const fresh = buildEpisodeRow(r);
+  if (enrichCache.size >= ENRICH_CACHE_CAP) {
+    enrichCache.delete(enrichCache.keys().next().value);
+  }
+  enrichCache.set(key, fresh);
+  return fresh;
+}
+
+function buildEpisodeRow(r) {
   const meta = readPackageMeta(r.meta_path);
   const videoPath = r.video_path || meta?.video || "";
   const ext = path.extname(videoPath).replace(/^\./, "").toLowerCase();
@@ -125,6 +167,9 @@ function enrichEpisodeRow(r) {
     duration_seconds: durationSec,
     clip_seconds: meta?.clipSeconds ?? null,
     has_video: Boolean(videoPath && fs.existsSync(videoPath)),
+    // Published episodes have their video deleted on purpose to reclaim disk —
+    // the UI must not present that as a missing file.
+    media_released: r.status === "published" && !videoPath,
     has_thumb: hasThumb,
   };
 }
@@ -146,6 +191,22 @@ function readBody(req) {
   });
 }
 
+/** In-flight revalidations, so N requests don't spawn N yt-dlp fleets. */
+const refreshingChannels = new Set();
+
+function refreshChannelInBackground(key, params) {
+  if (refreshingChannels.has(key)) return;
+  refreshingChannels.add(key);
+  fetchYoutubeChannel(params)
+    .then((fresh) => {
+      putCachedChannel(key, fresh);
+      // The client is showing the stale copy — tell it there's a newer one.
+      emitEvent("channel.updated", { url: params.url, channel: fresh.channel });
+    })
+    .catch((e) => emitLog("warn", "ytdlp", `revalidação do canal falhou: ${e.message}`))
+    .finally(() => refreshingChannels.delete(key));
+}
+
 function sessionStatus() {
   const cookies = loadCookies();
   const cfg = loadConfig() || {};
@@ -158,170 +219,6 @@ function sessionStatus() {
     showId: cfg.showId || null,
     episodesUrl: cfg.episodesUrl || null,
   };
-}
-
-async function drainWorker({ headless = true } = {}) {
-  if (workerRunning) return { started: false, reason: "already_running" };
-  workerRunning = true;
-  try {
-    for (;;) {
-      const job = claimNextPending();
-      if (!job) break;
-      if (isCancelRequested(job.id)) {
-        markCancelled(job.id, "cancelado pelo usuário");
-        continue;
-      }
-      console.error(`[api-worker] uploading ${job.id}`);
-      try {
-        await publishViaCreators(job, { headless });
-        if (isCancelRequested(job.id)) {
-          markCancelled(job.id, "cancelado após upload");
-        } else {
-          markPublished(job.id);
-          console.error(`[api-worker] ok ${job.id}`);
-        }
-      } catch (e) {
-        if (isCancelRequested(job.id)) {
-          markCancelled(job.id, e.message || "cancelado");
-        } else {
-          markFailed(job.id, e.message || e);
-          console.error(`[api-worker] FAIL ${job.id}:`, e.message || e);
-        }
-      }
-    }
-    return { started: true, done: true };
-  } finally {
-    workerRunning = false;
-  }
-}
-
-function kickWorker(headless = true) {
-  setImmediate(() => {
-    drainWorker({ headless }).catch((e) => console.error("[api-worker]", e));
-  });
-}
-
-async function runImportJob(jobId) {
-  if (runningImportJobs.has(jobId)) return;
-  runningImportJobs.add(jobId);
-  try {
-    const job = getJob(jobId);
-    if (!job || job.status === "cancelled") return;
-    const opts = job.options || {};
-    const videoIds = opts.videoIds || [];
-    const total = videoIds.length;
-    updateJob(jobId, {
-      status: "running",
-      progress: { phase: "downloading", current: 0, total, message: "baixando…" },
-    });
-
-    const outDir = path.join(DOWNLOADS_DIR, sourceDirName(job.url));
-    let done = 0;
-
-    for (const id of videoIds) {
-      const live = getJob(jobId);
-      if (!live || live.status === "cancelled") break;
-      if (isCancelRequested(id)) {
-        markCancelled(id, "cancelado pelo usuário");
-        done += 1;
-        continue;
-      }
-
-      updateEpisodeFields(id, { status: "downloading" });
-      updateJob(jobId, {
-        status: "running",
-        progress: {
-          phase: "downloading",
-          current: done,
-          total,
-          message: `baixando ${id}…`,
-        },
-      });
-
-      try {
-        const { files } = await downloadYoutube({
-          url: job.url,
-          outDir,
-          videoIds: [id],
-          audioOnly: Boolean(opts.audioOnly),
-          withThumb: opts.withThumb !== false,
-          withDescription: opts.withDescription !== false,
-          maxHeight: opts.maxHeight || null,
-        });
-
-        if (isCancelRequested(id) || getJob(jobId)?.status === "cancelled") {
-          markCancelled(id, "cancelado pelo usuário");
-          done += 1;
-          continue;
-        }
-
-        const match =
-          files.find((f) => f.includes(`[${id}]`)) || files[files.length - 1];
-        if (!match) {
-          markFailed(id, "arquivo não encontrado após download");
-        } else {
-          const pkg = episodeFromYtdlpMp4(match);
-          updateEpisodeFields(id, {
-            title: pkg.title,
-            description: opts.withDescription === false ? "" : pkg.description,
-            video_path: pkg.video_path,
-            image_path: opts.withThumb === false ? null : pkg.image_path,
-            meta_path: pkg.meta_path,
-            status: "pending",
-          });
-        }
-      } catch (e) {
-        if (isCancelRequested(id)) markCancelled(id, e.message);
-        else markFailed(id, e.message || e);
-      }
-
-      done += 1;
-      updateJob(jobId, {
-        progress: {
-          phase: "downloading",
-          current: done,
-          total,
-          message: `${done}/${total} baixados`,
-        },
-      });
-    }
-
-    if (getJob(jobId)?.status === "cancelled") return;
-
-    updateJob(jobId, {
-      status: "uploading",
-      progress: {
-        phase: "uploading",
-        current: done,
-        total,
-        message: "enviando drafts…",
-      },
-    });
-
-    await drainWorker({ headless: opts.headless !== false });
-
-    const still = getJob(jobId);
-    if (still?.status !== "cancelled") {
-      updateJob(jobId, {
-        status: "completed",
-        progress: {
-          phase: "done",
-          current: total,
-          total,
-          message: "concluído",
-        },
-      });
-    }
-  } catch (e) {
-    console.error("[import-job]", e);
-    updateJob(jobId, {
-      status: "failed",
-      error: e.message || String(e),
-      progress: { phase: "failed", message: e.message || String(e) },
-    });
-  } finally {
-    runningImportJobs.delete(jobId);
-  }
 }
 
 async function handleApi(req, res, url) {
@@ -348,7 +245,9 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     if (!body.curl) return json(res, 400, { error: "curl obrigatório" });
     const result = importFromCurl(String(body.curl));
-    return json(res, 200, { ...result, session: sessionStatus() });
+    // Fresh cookies unblock a batch that stopped on an expired session.
+    const resumed = clearSessionBlock({ headless: true });
+    return json(res, 200, { ...result, resumed, session: sessionStatus() });
   }
 
   if (pathname === "/api/config" && req.method === "GET") {
@@ -356,7 +255,8 @@ async function handleApi(req, res, url) {
     return json(res, 200, {
       showId: cfg.showId || null,
       episodesUrl: cfg.episodesUrl || null,
-      workerRunning,
+      workerRunning: isUploaderRunning(),
+      sessionBlocked: isSessionBlocked(),
     });
   }
 
@@ -395,14 +295,34 @@ async function handleApi(req, res, url) {
   if (pathname === "/api/youtube/channel" && req.method === "POST") {
     const body = await readBody(req);
     if (!body.url) return json(res, 400, { error: "url do canal obrigatória" });
-    const data = await fetchYoutubeChannel({
+    const params = {
       url: String(body.url),
       videoLimit: body.videoLimit || 12,
       videoOffset: body.videoOffset || 0,
       playlistLimit: body.playlistLimit || 24,
       videosOnly: Boolean(body.videosOnly),
-    });
-    return json(res, 200, data);
+    };
+
+    // Paging and videos-only are not worth caching — they're already narrow and
+    // the user isn't sitting on them the way they sit on a channel's first page.
+    const cacheable = !params.videosOnly && !params.videoOffset;
+    const key = cacheable ? channelCacheKey(params.url, params) : null;
+    const cached = key ? getCachedChannel(key) : null;
+
+    if (cached && !body.refresh) {
+      // Serve instantly; revalidate behind the user's back if it aged out.
+      if (cached.stale) refreshChannelInBackground(key, params);
+      return json(res, 200, {
+        ...cached.data,
+        fromCache: true,
+        stale: cached.stale,
+        fetchedAt: cached.fetchedAt,
+      });
+    }
+
+    const data = await fetchYoutubeChannel(params);
+    if (key) putCachedChannel(key, data);
+    return json(res, 200, { ...data, fromCache: false });
   }
 
   if (pathname === "/api/import" && req.method === "POST") {
@@ -441,6 +361,7 @@ async function handleApi(req, res, url) {
       });
     }
 
+    emitEvent("queue.invalidate", {});
     setImmediate(() => {
       runImportJob(job.id).catch((e) => console.error(e));
     });
@@ -466,11 +387,24 @@ async function handleApi(req, res, url) {
   }
 
   if (pathname === "/api/queue" && req.method === "GET") {
-    const rows = listEpisodes().map((r) => enrichEpisodeRow(r));
+    const since = url.searchParams.get("since");
+    let rows = listEpisodes();
+    if (since) rows = rows.filter((r) => r.updated_at > since);
     return json(res, 200, {
-      episodes: rows,
-      workerRunning,
+      episodes: rows.map((r) => enrichEpisodeRow(r)),
+      workerRunning: isUploaderRunning(),
+      sessionBlocked: isSessionBlocked(),
+      partial: Boolean(since),
+      lastEventId: lastEventId(),
       jobs: listJobs(20),
+    });
+  }
+
+  if (pathname === "/api/logs" && req.method === "GET") {
+    const jobId = url.searchParams.get("jobId") || undefined;
+    const limit = Number(url.searchParams.get("limit")) || 300;
+    return json(res, 200, {
+      logs: recentLogs({ jobId, limit: Math.min(1000, limit) }),
     });
   }
 
@@ -497,15 +431,43 @@ async function handleApi(req, res, url) {
 
   if (pathname === "/api/queue/requeue" && req.method === "POST") {
     const body = await readBody(req);
-    requeueFailed(body.id || undefined);
-    kickWorker(true);
-    return json(res, 200, { ok: true });
+    const { requeued, toDownload, jobIds, touchedJobs } = requeueFailed(
+      body.id || undefined
+    );
+    clearSessionBlock({ headless: true });
+
+    // Any job with work back in flight has to look active again, or the
+    // progress card stays hidden and the retry runs invisibly.
+    for (const id of touchedJobs) {
+      updateJob(id, { status: "running", error: null });
+      emitEvent("job.status", { jobId: id, status: "running" });
+    }
+
+    // Episodes with no file on disk need the download to run again, and only
+    // their job knows the source URL and options — so re-run those jobs. The
+    // loop skips episodes that already finished.
+    if (jobIds.length) resumeJobs(jobIds);
+
+    // Upload-only retries have no download loop to finalize them, so give the
+    // job a watcher that closes it out when its episodes are terminal.
+    for (const id of touchedJobs) {
+      if (!jobIds.includes(id)) watchJobToCompletion(id);
+    }
+    ensureUploader({ headless: true });
+    emitEvent("queue.invalidate", {});
+    return json(res, 200, {
+      ok: true,
+      requeued,
+      redownloading: toDownload.length,
+    });
   }
 
   if (pathname === "/api/queue/cancel" && req.method === "POST") {
     const body = await readBody(req);
     if (!body.id) return json(res, 400, { error: "id obrigatório" });
-    return json(res, 200, requestCancelEpisode(String(body.id)));
+    const result = requestCancelEpisode(String(body.id));
+    emitEvent("episode.status", { id: String(body.id), status: result.status });
+    return json(res, 200, result);
   }
 
   if (pathname === "/api/show" && req.method === "GET") {
@@ -576,12 +538,75 @@ async function handleApi(req, res, url) {
   }
 
   if (pathname === "/api/worker/start" && req.method === "POST") {
-    if (workerRunning) return json(res, 200, { started: false, workerRunning });
-    kickWorker(true);
+    if (isUploaderRunning()) {
+      return json(res, 200, { started: false, workerRunning: true });
+    }
+    clearSessionBlock({ headless: true });
+    // Draining the queue by hand still has to close the jobs out — only
+    // runImportJob does that on its own, and it isn't involved here.
+    for (const id of jobsWithActiveEpisodes()) watchJobToCompletion(id);
+    ensureUploader({ headless: true });
     return json(res, 200, { started: true });
   }
 
   return json(res, 404, { error: "not found" });
+}
+
+// ------------------------------------------------------------------ SSE
+
+const sseClients = new Set();
+
+function handleEvents(req, res, url) {
+  // Deliberately not going through json() — that helper pins the content type.
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    // Tell any intermediary not to buffer; a buffered stream looks identical
+    // to a dead one from the client's side.
+    "X-Accel-Buffering": "no",
+    "Access-Control-Allow-Origin": "*",
+  });
+  res.flushHeaders?.();
+  req.socket.setTimeout(0);
+  req.socket.setNoDelay(true);
+  req.socket.setKeepAlive(true);
+
+  const write = (evt) => {
+    if (res.writableEnded) return;
+    try {
+      res.write(serializeSse(evt));
+    } catch {
+      cleanup();
+    }
+  };
+
+  write({ id: 0, type: "hello", data: { bootId: BOOT_ID, lastEventId: lastEventId() } });
+
+  // EventSource sends Last-Event-ID automatically when it reconnects.
+  const resume =
+    req.headers["last-event-id"] || url.searchParams.get("lastEventId");
+  if (resume) for (const evt of eventsSince(resume)) write(evt);
+
+  bus.on("event", write);
+  sseClients.add(res);
+
+  // A real `ping` event, not a `:` comment: a comment keeps the socket alive but
+  // is invisible to EventSource, so the client can't use it as a liveness signal.
+  const heartbeat = setInterval(() => write({ id: 0, type: "ping", data: {} }), 15_000);
+  heartbeat.unref?.();
+
+  let done = false;
+  function cleanup() {
+    if (done) return;
+    done = true;
+    clearInterval(heartbeat);
+    bus.off("event", write);
+    sseClients.delete(res);
+  }
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+  res.on("error", cleanup);
 }
 
 function contentType(file) {
@@ -616,6 +641,9 @@ function serveStatic(req, res, url) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
+    if (url.pathname === "/api/events" && req.method === "GET") {
+      return handleEvents(req, res, url);
+    }
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);
       return;
@@ -627,11 +655,73 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+/** Reconcile work left mid-flight by a crash, before we accept any request. */
+function bootRecovery() {
+  const r = recoverStaleWork();
+  if (r.stuckDownloads) {
+    emitLog(
+      "warn",
+      "server",
+      `${r.stuckDownloads} download(s) interrompidos foram recolocados na fila`
+    );
+  }
+  if (r.stuckUploads) {
+    emitLog(
+      "warn",
+      "server",
+      `${r.stuckUploads} envio(s) interrompidos foram marcados como falha — confira no Spotify antes de reenviar`
+    );
+  }
+  // Apply the "uploaded, so drop the file" policy to anything published before
+  // the policy existed — otherwise that backlog sits on disk forever.
+  let freed = 0;
+  for (const ep of publishedWithMedia()) {
+    const { freedBytes } = releaseEpisodeMedia(ep);
+    if (freedBytes > 0) {
+      updateEpisodeFields(ep.id, { video_path: "" });
+      freed += freedBytes;
+    }
+  }
+  if (freed > 0) {
+    emitLog(
+      "info",
+      "server",
+      `${formatBytes(freed)} liberados de episódios já publicados`
+    );
+  }
+
+  if (r.orphaned.length) finalizeOrphanedJobs(r.orphaned);
+  if (r.resumable.length) {
+    emitLog("info", "server", `retomando ${r.resumable.length} job(s)`);
+    resumeJobs(r.resumable);
+  }
+}
+
+/**
+ * Close SSE streams first: `server.close()` waits on in-flight responses, and an
+ * event stream never ends on its own — without this the Electron app would hang
+ * on quit instead of shutting the server down.
+ */
+export async function stopServer() {
+  await closeAllCreatorsSessions().catch(() => {});
+  for (const res of [...sseClients]) {
+    try {
+      res.end();
+    } catch {
+      /* ignore */
+    }
+  }
+  sseClients.clear();
+  server.closeAllConnections?.();
+  await new Promise((resolve) => server.close(resolve));
+}
+
 /**
  * Start HTTP API + static UI. port=0 picks a free port (Electron).
  * @returns {Promise<{ server: import('node:http').Server, port: number, url: string }>}
  */
 export function startServer({ port = PORT, host = "127.0.0.1" } = {}) {
+  bootRecovery();
   return new Promise((resolve, reject) => {
     const onError = (err) => {
       server.off("listening", onListening);
@@ -666,4 +756,11 @@ if (isDirectRun()) {
     console.error(e);
     process.exit(1);
   });
+  for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.once(sig, () => {
+      stopServer()
+        .catch(() => {})
+        .finally(() => process.exit(0));
+    });
+  }
 }

@@ -175,3 +175,42 @@ export function IconChevronLeft({ size = 18 }) {
     </svg>
   );
 }
+
+/** Filled/outline star — one clickable control for the favourite state. */
+export function IconStar({ size = 18, filled = false }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill={filled ? "currentColor" : "none"}
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="m12 3.6 2.6 5.27 5.82.85-4.21 4.1 1 5.79L12 16.88l-5.21 2.73 1-5.79-4.21-4.1 5.82-.85L12 3.6Z"
+      />
+    </svg>
+  );
+}
+
+/** Magnifier — "look up a different channel", clearer than a swap arrow. */
+export function IconSearch({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <circle
+        cx="11"
+        cy="11"
+        r="6.25"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+      />
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        d="m15.6 15.6 4.4 4.4"
+      />
+    </svg>
+  );
+}

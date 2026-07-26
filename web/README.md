@@ -1,16 +1,36 @@
-# React + Vite
+# web/ — UI do Spotidraft
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+SPA em React 19 + Vite. Consome a API em `src/server/` do projeto pai; não roda
+sozinha (o dev server faz proxy de `/api` para `127.0.0.1:8787`).
 
-Currently, two official plugins are available:
+```bash
+npm run dev      # Vite em :5173, proxy /api → :8787
+npm run build    # gera dist/, que o servidor Node serve em produção
+npm run lint     # oxlint
+```
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Suba a API antes: `npm run server` (ou `npm run dev:server`) na raiz.
 
-## React Compiler
+## Como se orienta aqui
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Caminho | O que é |
+|---------|---------|
+| `src/Layout.jsx` | Shell: sidebar colapsável, status de sessão, FAB do Spotify |
+| `src/pages/` | Uma por rota — Home, Import, Progress, Spotify, Session |
+| `src/components/` | Peças compartilhadas (ProgressBar, LogPanel, Modal, Thumb…) |
+| `src/hooks/useEventStream.js` | SSE com watchdog e fallback para polling |
+| `src/toast/` | Provider montado acima do router, para toasts sobreviverem à navegação |
+| `src/index.css` | Folha única, tokens OKLCH em `:root` (ver `DESIGN.md` na raiz) |
 
-## Expanding the Oxlint configuration
+## Convenções que valem conhecer
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+- **Sem framework de estado.** `useState` por página; o que cruza rotas vai pelo
+  `useOutletContext` do Layout ou por `localStorage` (`channels.js`,
+  `homePrefs.js`, `sidebarPrefs.js`).
+- **Progresso vem por evento, não por polling.** `useEventStream` assina
+  `/api/events`; cada evento remenda uma linha em vez de rebuscar a fila.
+  O polling só entra como fallback quando o SSE não passa.
+- **Erros viram toast**, não banner no topo da página — e o provider fica fora
+  do `<Outlet/>` justamente para a mensagem sobreviver ao `navigate`.
+- **Sem TypeScript e sem test runner.** A verificação da UI é `npm run lint` mais
+  rodar o app; a lógica testável mora no backend.

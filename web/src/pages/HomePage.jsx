@@ -1,12 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import {
-  clearFavoriteChannel,
-  loadFavoriteChannel,
-  saveFavoriteChannel,
-} from "../favoriteChannel";
+  forgetChannel,
+  isSameChannel,
+  lastChannel,
+  loadChannels,
+  rememberChannel,
+  setLastChannel,
+} from "../channels";
 import { loadHomeViewMode, saveHomeViewMode } from "../homePrefs";
+import { formatDuration as fmtDur } from "../format";
+import { isChannelQuery, ytThumb } from "../lib/youtube";
+import { ChannelSwitcher } from "../components/ChannelSwitcher.jsx";
+import { useToast } from "../toast/ToastProvider.jsx";
+import { useImportRunner } from "../hooks/useImportRunner.js";
+import {
+  DEFAULT_DOWNLOAD_OPTIONS,
+  DownloadOptions,
+} from "../components/DownloadOptions.jsx";
+import { Skeleton } from "../components/Skeleton.jsx";
+import { Thumb } from "../components/Thumb.jsx";
 import {
   IconCheckAll,
   IconChevronLeft,
@@ -17,31 +30,15 @@ import {
   IconList,
   IconRefresh,
   IconSend,
-  IconStarOff,
-  IconSwap,
+  IconStar,
 } from "../icons";
 
 const PAGE = 12;
 
-function fmtDur(sec) {
-  if (sec == null) return "—";
-  const s = Math.round(Number(sec));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const r = s % 60;
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-  }
-  return `${m}:${String(r).padStart(2, "0")}`;
-}
-
-function ytThumb(id) {
-  return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
-}
-
 export default function HomePage() {
-  const nav = useNavigate();
-  const [url, setUrl] = useState("https://www.youtube.com/@canalgweek");
+  const toast = useToast();
+  const { run: runImport, busy: importing } = useImportRunner();
+  const [url, setUrl] = useState("");
   const [channel, setChannel] = useState(null);
   const [recentVideos, setRecentVideos] = useState([]);
   const [recentHasMore, setRecentHasMore] = useState(false);
@@ -52,13 +49,8 @@ export default function HomePage() {
   const [selected, setSelected] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [msg, setMsg] = useState(null);
-  const [favoritePrompt, setFavoritePrompt] = useState(null);
-  const [favorite, setFavorite] = useState(() => loadFavoriteChannel());
-  const [audioOnly, setAudioOnly] = useState(false);
-  const [withThumb, setWithThumb] = useState(true);
-  const [withDescription, setWithDescription] = useState(true);
-  const [maxHeight, setMaxHeight] = useState("");
+  const [channels, setChannels] = useState(() => loadChannels());
+  const [options, setOptions] = useState(DEFAULT_DOWNLOAD_OPTIONS);
   const [expanded, setExpanded] = useState(null);
   const [descBusy, setDescBusy] = useState(null);
   const [viewMode, setViewMode] = useState(() => loadHomeViewMode());
@@ -75,9 +67,14 @@ export default function HomePage() {
     setPlaylistVideos(apply);
   }, []);
 
-  const openChannel = async (rawUrl, { askFavorite = true } = {}) => {
+  const openChannel = async (rawUrl, { refresh = false } = {}) => {
+    // Fail fast on a typo instead of spending half a minute in yt-dlp first.
+    // Accepts "@handle" and a bare name too — the server normalizes those.
+    if (!isChannelQuery(rawUrl)) {
+      toast.error("Digite um @handle ou o link de um canal do YouTube.");
+      return;
+    }
     setBusy(true);
-    setMsg(null);
     setPlaylistFocus(null);
     setPlaylistVideos([]);
     setTab("recent");
@@ -87,28 +84,20 @@ export default function HomePage() {
       const data = await api.youtubeChannel(rawUrl.trim(), {
         videoLimit: PAGE,
         videoOffset: 0,
+        refresh,
       });
       setChannel(data.channel);
       setRecentVideos(data.videos || []);
       setRecentHasMore(Boolean(data.hasMore));
       setPlaylists(data.playlists || []);
       setSelected(new Set());
-      setMsg({
-        type: "ok",
-        text: `${(data.videos || []).length} recentes · ${(data.playlists || []).length} playlists`,
-      });
 
-      const fav = loadFavoriteChannel();
-      const same =
-        fav &&
-        (fav.url === data.channel.url ||
-          fav.id === data.channel.id ||
-          fav.handle === data.channel.handle);
-      if (askFavorite && !same) {
-        setFavoritePrompt(data.channel);
-      }
+      // Opening a channel is intent enough — remember it silently and let the
+      // star be the way out, instead of interrupting with a dialog every time.
+      setChannels(rememberChannel(data.channel));
+      setLastChannel(data.channel);
     } catch (e) {
-      setMsg({ type: "error", text: e.message });
+      toast.error(e.message);
     } finally {
       setBusy(false);
     }
@@ -137,20 +126,19 @@ export default function HomePage() {
       });
       setRecentHasMore(Boolean(data.hasMore) && incoming.length > 0);
     } catch (e) {
-      setMsg({ type: "error", text: e.message });
+      toast.error(e.message);
       setRecentHasMore(false);
     } finally {
       loadingMoreRef.current = false;
       setLoadingMore(false);
     }
-  }, [channel?.url, recentHasMore, recentVideos.length, busy]);
+  }, [channel?.url, recentHasMore, recentVideos.length, busy, toast]);
 
   useEffect(() => {
-    const fav = loadFavoriteChannel();
-    setFavorite(fav);
-    if (fav?.url) {
-      setUrl(fav.url);
-      openChannel(fav.url, { askFavorite: false });
+    const last = lastChannel();
+    if (last?.url) {
+      setUrl(last.url);
+      openChannel(last.url);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -171,7 +159,6 @@ export default function HomePage() {
 
   const openPlaylist = async (pl) => {
     setBusy(true);
-    setMsg(null);
     setExpanded(null);
     try {
       const data = await api.listYoutube(pl.url, undefined, { flat: true });
@@ -179,12 +166,8 @@ export default function HomePage() {
       setSelected(new Set());
       setPlaylistFocus(pl);
       setTab("playlist");
-      setMsg({
-        type: "ok",
-        text: `${(data.videos || []).length} vídeo(s) em “${pl.title}”`,
-      });
     } catch (e) {
-      setMsg({ type: "error", text: e.message });
+      toast.error(e.message);
     } finally {
       setBusy(false);
     }
@@ -249,47 +232,27 @@ export default function HomePage() {
         });
       }
     } catch (e) {
-      patchVideo(v.id, {
-        description: `(Não foi possível carregar a descrição: ${e.message})`,
-      });
+      // Writing the error into `description` made a failure look like content.
+      toast.error(`Não consegui carregar a descrição: ${e.message}`);
     } finally {
       setDescBusy(null);
     }
   };
 
-  const startImport = async (idsOverride) => {
+  const startImport = (idsOverride) => {
     const ids = Array.isArray(idsOverride) ? idsOverride : [...selected];
     if (!channel?.url || ids.length === 0) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const titles = {};
-      for (const v of videos) {
-        if (ids.includes(v.id)) titles[v.id] = v.title;
-      }
-      const sourceUrl =
-        playlistFocus?.url ||
-        videos.find((v) => ids.includes(v.id))?.url ||
-        channel.url;
-      const data = await api.importVideos({
-        url: sourceUrl,
-        videoIds: ids,
-        titles,
-        audioOnly,
-        withThumb,
-        withDescription,
-        maxHeight: maxHeight ? Number(maxHeight) : null,
-      });
-      setMsg({
-        type: "ok",
-        text: `Job ${data.jobId.slice(0, 8)}… — ${ids.length} vídeo(s) a caminho do Spotify. Acompanhe em Progresso.`,
-      });
-      nav("/progress");
-    } catch (e) {
-      setMsg({ type: "error", text: e.message });
-    } finally {
-      setBusy(false);
+    const titles = {};
+    for (const v of videos) {
+      if (ids.includes(v.id)) titles[v.id] = v.title;
     }
+    // This cascade is Home-specific — a playlist import must be attributed to
+    // the playlist, not the channel — so it stays here rather than in the hook.
+    const sourceUrl =
+      playlistFocus?.url ||
+      videos.find((v) => ids.includes(v.id))?.url ||
+      channel.url;
+    return runImport({ url: sourceUrl, ids, titles, options });
   };
 
   const sendOne = (v) => {
@@ -299,18 +262,36 @@ export default function HomePage() {
     return startImport([v.id]);
   };
 
-  const acceptFavorite = () => {
-    if (!favoritePrompt) return;
-    const saved = saveFavoriteChannel(favoritePrompt);
-    setFavorite(saved);
-    setFavoritePrompt(null);
+  const toggleFavorite = () => {
+    if (!channel) return;
+    if (isFav) {
+      setChannels(forgetChannel(channel));
+      toast.info(`${channel.title} não será mais lembrado.`);
+    } else {
+      setChannels(rememberChannel(channel));
+      toast.ok(`${channel.title} salvo nos canais.`);
+    }
   };
 
-  const declineFavorite = () => setFavoritePrompt(null);
+  const clearChannel = () => {
+    setChannel(null);
+    setRecentVideos([]);
+    setPlaylists([]);
+    setPlaylistFocus(null);
+    setPlaylistVideos([]);
+    setSelected(new Set());
+    setUrl("");
+  };
 
-  const removeFavorite = () => {
-    clearFavoriteChannel();
-    setFavorite(null);
+  const pickChannel = (c) => {
+    setUrl(c.url);
+    setLastChannel(c);
+    openChannel(c.url);
+  };
+
+  const forgetOne = (c) => {
+    setChannels(forgetChannel(c));
+    toast.info(`${c.title} removido.`);
   };
 
   const selectedCount = selected.size;
@@ -320,39 +301,95 @@ export default function HomePage() {
     return "Playlists";
   }, [tab, playlistFocus]);
 
-  const isFav =
-    channel &&
-    (favorite?.url === channel.url ||
-      favorite?.id === channel.id ||
-      favorite?.handle === channel.handle);
+  const isFav = Boolean(
+    channel && channels.some((c) => isSameChannel(c, channel))
+  );
 
   return (
     <div className="home-page">
-      {msg && <div className={`msg ${msg.type}`}>{msg.text}</div>}
-
       {!channel && (
-        <div className="field">
-          <label htmlFor="channel-url">Canal do YouTube</label>
-          <div className="url-row">
-            <input
-              id="channel-url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && url.trim() && !busy) openChannel(url);
-              }}
-              placeholder="https://www.youtube.com/@canalgweek"
-            />
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={busy || !url.trim()}
-              onClick={() => openChannel(url)}
-            >
-              {busy ? "Abrindo…" : "Abrir"}
-            </button>
+        <>
+          {/* The page had no h1 at all until a channel loaded. */}
+          <h1>Escolha um canal</h1>
+          <p>
+            Cole o link de um canal do YouTube para ver os vídeos e mandar pro
+            Spotify como rascunho.
+          </p>
+          <div className="field">
+            <label htmlFor="channel-url">Canal do YouTube</label>
+            <div className="url-row">
+              <input
+                id="channel-url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && url.trim() && !busy) openChannel(url);
+                }}
+                placeholder="@canalgweek ou youtube.com/@canalgweek"
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy || !url.trim()}
+                onClick={() => openChannel(url)}
+              >
+                {busy ? "Abrindo…" : "Abrir"}
+              </button>
+            </div>
+            <p className="field-hint">
+              Aceita @handle, nome do canal ou link completo.
+            </p>
           </div>
-        </div>
+
+          {channels.length > 0 && !busy && (
+            <section className="saved-channels">
+              <h2 className="saved-channels-title">Seus canais</h2>
+              <div className="saved-channels-grid">
+                {channels.map((c) => (
+                  <div className="saved-channel" key={c.url}>
+                    <button
+                      type="button"
+                      className="saved-channel-hit"
+                      onClick={() => pickChannel(c)}
+                    >
+                      <span className="saved-channel-avatar">
+                        <Thumb
+                          src={c.thumb}
+                          fallbackText={(c.title || "?").slice(0, 1).toUpperCase()}
+                        />
+                      </span>
+                      <span className="saved-channel-meta">
+                        <span className="saved-channel-name">{c.title}</span>
+                        {c.handle && (
+                          <span className="saved-channel-handle">{c.handle}</span>
+                        )}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn icon-btn-sm saved-channel-forget"
+                      title={`Esquecer ${c.title}`}
+                      aria-label={`Esquecer ${c.title}`}
+                      onClick={() => forgetOne(c)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+          {busy && (
+            <>
+              {/* Resolving a channel runs three yt-dlp processes and can take
+                  half a minute — show the shape of what's coming. */}
+              <p className="loading-note" role="status">
+                Consultando o YouTube… isso pode levar alguns segundos.
+              </p>
+              <Skeleton.Group count={6} label="Carregando vídeos do canal…" />
+            </>
+          )}
+        </>
       )}
 
       {channel && (
@@ -382,47 +419,39 @@ export default function HomePage() {
                 </div>
                 <div className="channel-sub">
                   {channel.handle && <span>{channel.handle}</span>}
-                  {isFav ? <span className="chip ok">★</span> : null}
                 </div>
               </div>
             </div>
             <div className="icon-btn-row">
+              <ChannelSwitcher
+                channels={channels}
+                current={channel}
+                onPick={pickChannel}
+                onForget={forgetOne}
+                onSearchNew={clearChannel}
+              />
+              {/* One control for the remembered state instead of a chip plus a
+                  separate remove button taking two slots. */}
+              <button
+                type="button"
+                className={`icon-btn icon-btn-star ${isFav ? "is-fav" : ""}`}
+                title={isFav ? "Esquecer este canal" : "Lembrar este canal"}
+                aria-label={isFav ? "Esquecer este canal" : "Lembrar este canal"}
+                aria-pressed={isFav}
+                onClick={toggleFavorite}
+              >
+                <IconStar filled={isFav} />
+              </button>
               <button
                 type="button"
                 className="icon-btn"
                 disabled={busy}
                 title="Atualizar"
                 aria-label="Atualizar canal"
-                onClick={() => openChannel(channel.url, { askFavorite: false })}
+                onClick={() => openChannel(channel.url, { refresh: true })}
               >
                 <IconRefresh />
               </button>
-              <button
-                type="button"
-                className="icon-btn"
-                title="Trocar canal"
-                aria-label="Trocar canal"
-                onClick={() => {
-                  setChannel(null);
-                  setRecentVideos([]);
-                  setPlaylists([]);
-                  setPlaylistFocus(null);
-                  setPlaylistVideos([]);
-                }}
-              >
-                <IconSwap />
-              </button>
-              {isFav && (
-                <button
-                  type="button"
-                  className="icon-btn"
-                  title="Remover favorito"
-                  aria-label="Remover favorito"
-                  onClick={removeFavorite}
-                >
-                  <IconStarOff />
-                </button>
-              )}
             </div>
           </div>
 
@@ -503,13 +532,7 @@ export default function HomePage() {
                         disabled={busy}
                       >
                         <div className="yt-thumb">
-                          {pl.thumb ? (
-                            <img src={pl.thumb} alt="" loading="lazy" />
-                          ) : (
-                            <div className="yt-thumb-fallback" aria-hidden="true">
-                              ▤
-                            </div>
-                          )}
+                          <Thumb src={pl.thumb} fallbackText="▤" />
                           <div className="yt-thumb-shade" aria-hidden="true" />
                           <span className="yt-pl-count">
                             {pl.count != null ? `${pl.count}` : "PL"}
@@ -575,46 +598,7 @@ export default function HomePage() {
                       <IconCog />
                     </summary>
                     <div className="icon-menu-panel">
-                      <div className="options options-compact">
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={audioOnly}
-                            onChange={(e) => setAudioOnly(e.target.checked)}
-                          />
-                          Só áudio
-                        </label>
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={withThumb}
-                            onChange={(e) => setWithThumb(e.target.checked)}
-                            disabled={audioOnly}
-                          />
-                          Thumbnail
-                        </label>
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={withDescription}
-                            onChange={(e) => setWithDescription(e.target.checked)}
-                          />
-                          Descrição
-                        </label>
-                        <label className="options-quality">
-                          Qualidade
-                          <select
-                            value={maxHeight}
-                            onChange={(e) => setMaxHeight(e.target.value)}
-                            disabled={audioOnly}
-                          >
-                            <option value="">Melhor</option>
-                            <option value="1080">≤ 1080p</option>
-                            <option value="720">≤ 720p</option>
-                            <option value="480">≤ 480p</option>
-                          </select>
-                        </label>
-                      </div>
+                      <DownloadOptions value={options} onChange={setOptions} compact />
                     </div>
                   </details>
                 </div>
@@ -654,12 +638,12 @@ export default function HomePage() {
                             type="button"
                             className="yt-card-hit"
                             onClick={() => expandVideo(v)}
+                            aria-expanded={open}
                           >
                             <div className="yt-thumb">
-                              <img
+                              <Thumb
                                 src={v.thumb || ytThumb(v.id)}
-                                alt=""
-                                loading="lazy"
+                                fallbackText="▶"
                               />
                               {v.duration != null && (
                                 <span className="yt-duration">{fmtDur(v.duration)}</span>
@@ -673,6 +657,41 @@ export default function HomePage() {
                               </div>
                             </div>
                           </button>
+
+                          {/* Actions live over the thumb on hover; the rest of
+                              the card stays a plain click-to-expand target. */}
+                          <div className="yt-hover-actions">
+                            <button
+                              type="button"
+                              className="yt-hover-btn"
+                              disabled={busy || importing}
+                              title="Enviar direto pro Spotify"
+                              aria-label={`Enviar ${v.title} pro Spotify`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                sendOne(v);
+                              }}
+                            >
+                              <IconSend size={15} />
+                              Enviar
+                            </button>
+                            <button
+                              type="button"
+                              className={`yt-hover-btn ghost ${isOn ? "on" : ""}`}
+                              title={isOn ? "Remover da fila" : "Adicionar à fila"}
+                              aria-label={
+                                isOn
+                                  ? `Remover ${v.title} da fila`
+                                  : `Adicionar ${v.title} à fila`
+                              }
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggle(v.id);
+                              }}
+                            >
+                              {isOn ? "✓ Na fila" : "+ Fila"}
+                            </button>
+                          </div>
                         </div>
                         {open && (
                           <div className="yt-details episode-details">
@@ -747,24 +766,40 @@ export default function HomePage() {
               )}
 
               {selectedCount > 0 && (
-                <div className="queue-bar" role="region" aria-label="Fila de envio">
-                  <div className="queue-bar-copy">
-                    <strong>{selectedCount}</strong>
-                    <span>
-                      {selectedCount === 1
-                        ? "vídeo na fila"
-                        : "vídeos na fila"}
+                <div className="queue-bar" role="region" aria-label="Seleção">
+                  <div className="queue-bar-left">
+                    <span className="queue-bar-count" aria-hidden="true">
+                      {selectedCount}
+                    </span>
+                    <span className="queue-bar-copy">
+                      <strong>
+                        {selectedCount === 1
+                          ? "1 vídeo selecionado"
+                          : `${selectedCount} vídeos selecionados`}
+                      </strong>
+                      <span className="queue-bar-hint">
+                        vão pro Spotify como rascunho
+                      </span>
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-with-icon"
-                    disabled={busy}
-                    onClick={() => startImport()}
-                  >
-                    <IconSend size={16} />
-                    Enviar pro Spotify
-                  </button>
+                  <div className="queue-bar-actions">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setSelected(new Set())}
+                    >
+                      Limpar
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-with-icon"
+                      disabled={busy || importing}
+                      onClick={() => startImport()}
+                    >
+                      <IconSend size={16} />
+                      {importing ? "Enviando…" : "Enviar pro Spotify"}
+                    </button>
+                  </div>
                 </div>
               )}
             </>
@@ -772,33 +807,6 @@ export default function HomePage() {
         </>
       )}
 
-      {favoritePrompt && (
-        <div className="modal-backdrop" role="presentation">
-          <div className="modal-card" role="dialog" aria-labelledby="fav-title">
-            <h2 id="fav-title">Salvar como favorito?</h2>
-            <p>
-              Quer lembrar <strong>{favoritePrompt.title}</strong> na Home nas
-              próximas vezes?
-            </p>
-            <div className="row" style={{ gap: "0.5rem", marginTop: "1rem" }}>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={acceptFavorite}
-              >
-                Salvar
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={declineFavorite}
-              >
-                Agora não
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

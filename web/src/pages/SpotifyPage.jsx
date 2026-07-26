@@ -2,6 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { api } from "../api";
 import { formatLocalDateTime } from "../format";
+import { useToast } from "../toast/ToastProvider.jsx";
+import { FilterChips } from "../components/FilterChips.jsx";
+import { Skeleton } from "../components/Skeleton.jsx";
+import { Thumb } from "../components/Thumb.jsx";
+import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
+import { IconRefresh } from "../icons.jsx";
 
 function statusPt(s) {
   if (!s) return "—";
@@ -39,12 +45,13 @@ function creatorsHref(href) {
 
 export default function SpotifyPage() {
   const { refreshSession } = useOutletContext() || {};
+  const toast = useToast();
   const [show, setShow] = useState(null);
   const [session, setSession] = useState(null);
   const [episodes, setEpisodes] = useState([]);
   const [busy, setBusy] = useState(false);
   const [loadingCache, setLoadingCache] = useState(true);
-  const [msg, setMsg] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
   const [fetchedAt, setFetchedAt] = useState(null);
   const [fromCache, setFromCache] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -72,24 +79,22 @@ export default function SpotifyPage() {
     setFromCache(Boolean(data.fromCache));
     if (!silent) {
       const n = (data.episodes || []).length;
-      setMsg({
-        type: "ok",
-        text: data.fromCache
+      toast.ok(
+        data.fromCache
           ? `${n} episódio(s) em cache`
-          : `${n} episódio(s) atualizados do Creators`,
-      });
+          : `${n} episódio(s) atualizados do Creators`
+      );
     }
   };
 
   const refreshRemote = async ({ silent } = {}) => {
     setBusy(true);
-    if (!silent) setMsg(null);
     try {
       const data = await api.spotifyEpisodes({ refresh: true });
       applyCatalog({ ...data, fromCache: false }, { silent });
       refreshSession?.();
     } catch (e) {
-      setMsg({ type: "error", text: e.message });
+      toast.error(e.message);
     } finally {
       setBusy(false);
     }
@@ -115,7 +120,7 @@ export default function SpotifyPage() {
           if (!cancelled) applyCatalog(live);
         }
       } catch (e) {
-        if (!cancelled) setMsg({ type: "error", text: e.message });
+        if (!cancelled) toast.error(e.message);
       } finally {
         if (!cancelled) {
           setLoadingCache(false);
@@ -126,18 +131,21 @@ export default function SpotifyPage() {
     return () => {
       cancelled = true;
     };
+    // Mount-only: this is the initial catalog load. Re-running it on every
+    // applyCatalog identity change would re-scrape the Creators site.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const del = async (title) => {
-    if (!confirm(`Excluir "${title}" no Spotify for Creators?`)) return;
+  const confirmDelete = async () => {
+    const title = pendingDelete;
     setBusy(true);
-    setMsg(null);
     try {
       await api.deleteSpotifyEpisode(title);
       setEpisodes((prev) => prev.filter((e) => e.title !== title));
-      setMsg({ type: "ok", text: `Excluído: ${title}` });
+      setPendingDelete(null);
+      toast.ok(`Excluído: ${title}`);
     } catch (e) {
-      setMsg({ type: "error", text: e.message });
+      toast.error(e.message);
     } finally {
       setBusy(false);
     }
@@ -171,109 +179,108 @@ export default function SpotifyPage() {
       ? show.name
       : null;
 
+  const showImage =
+    typeof show?.imageUrl === "string" && show.imageUrl.startsWith("http")
+      ? show.imageUrl
+      : null;
+
   return (
     <div>
-      <h1>Spotify</h1>
-      <p>Dados do programa e episódios que já estão no Creators.</p>
-      {msg && <div className={`msg ${msg.type}`}>{msg.text}</div>}
-
-      <div className="options" style={{ marginBottom: "1.25rem" }}>
-        <div>
-          <div className="detail-label">Programa</div>
-          <div
-            style={{
-              fontFamily: "var(--font-display)",
-              fontSize: "1.25rem",
-              marginTop: 4,
-            }}
-          >
-            {showName || "—"}
-          </div>
-        </div>
-        <div>
-          <div className="detail-label">Show ID</div>
-          <code>{show?.showId || "—"}</code>
-        </div>
-        <div>
-          <div className="detail-label">Sessão</div>
-          <span
-            className={`chip ${session?.ok ? "ok" : "bad"}`}
-            style={{ marginTop: 6 }}
-          >
-            {session?.ok
-              ? `Ok · ${session.cookieCount} cookies`
-              : "Ausente / incompleta"}
-          </span>
-        </div>
-        <div>
-          <div className="detail-label">Link</div>
-          {show?.episodesUrl ? (
-            <a
-              href={show.episodesUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="detail-link"
-            >
-              Abrir episódios
-            </a>
-          ) : (
-            "—"
-          )}
-        </div>
-      </div>
-
-      <div className="row" style={{ marginBottom: "1rem" }}>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy || loadingCache}
-          onClick={() => refreshRemote()}
-        >
-          {busy ? "Atualizando…" : "Atualizar"}
-        </button>
-        {(fetchedAt || loadingCache) && (
-          <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-            {loadingCache && episodes.length === 0
-              ? "Carregando…"
-              : `${fromCache ? "Cache" : "Ao vivo"} · ${formatLocalDateTime(fetchedAt)}`}
-          </span>
-        )}
-      </div>
-
-      {episodes.length > 0 && (
-        <div className="filters-bar">
-          <div className="filter-chips" role="tablist">
-            {FILTERS.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                className={`filter-chip ${filter === f.id ? "active" : ""}`}
-                onClick={() => setFilter(f.id)}
-              >
-                {f.label}
-                <span className="filter-count">{counts[f.id] ?? 0}</span>
-              </button>
-            ))}
-          </div>
-          <input
-            type="search"
-            className="filter-search"
-            placeholder="Buscar título…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+      {/* The show itself is the header now, instead of a metadata grid. */}
+      <header className="show-header">
+        <span className="show-header-art">
+          <Thumb
+            src={showImage}
+            fallbackText={(showName || "?").slice(0, 1).toUpperCase()}
           />
+        </span>
+        <div className="show-header-meta">
+          <h1 className="show-header-name">{showName || "Seu programa"}</h1>
+          <div className="show-header-chips">
+            {show?.episodesUrl && (
+              <a
+                className="chip chip-link"
+                href={show.episodesUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Episódios ↗
+              </a>
+            )}
+            <span className={`chip ${session == null ? "" : session.ok ? "ok" : "bad"}`}>
+              {session == null
+                ? "Verificando…"
+                : session.ok
+                  ? `Sessão ok · ${session.cookieCount} cookies`
+                  : "Sessão ausente"}
+            </span>
+            {/* Show ID matters only when something is wrong — keep it reachable
+                but out of the way. */}
+            <details className="show-id-details">
+              <summary className="chip chip-quiet">Detalhes técnicos</summary>
+              <div className="show-id-panel">
+                <div className="detail-label">Show ID</div>
+                <code>{show?.showId || "—"}</code>
+              </div>
+            </details>
+          </div>
         </div>
-      )}
+      </header>
+
+      <div className="filters-bar">
+        {episodes.length > 0 && (
+          <FilterChips
+            label="Filtrar por status"
+            options={FILTERS}
+            value={filter}
+            onChange={setFilter}
+            counts={counts}
+          />
+        )}
+        <div className="filters-bar-end">
+          {episodes.length > 0 && (
+            <input
+              type="search"
+              className="filter-search"
+              aria-label="Buscar episódios pelo título"
+              placeholder="Buscar título…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          )}
+          <button
+            type="button"
+            className={`icon-btn ${busy ? "is-spinning" : ""}`}
+            disabled={busy || loadingCache}
+            title={
+              fetchedAt
+                ? `Atualizar — ${fromCache ? "cache" : "ao vivo"} de ${formatLocalDateTime(fetchedAt)}`
+                : "Atualizar do Creators"
+            }
+            aria-label="Atualizar lista do Creators"
+            onClick={() => refreshRemote()}
+          >
+            <IconRefresh />
+          </button>
+        </div>
+      </div>
 
       <div className="episode-list">
         {filtered.length === 0 ? (
-          <div className="empty-hint">
-            {loadingCache || busy
-              ? "Carregando episódios do Creators…"
-              : episodes.length === 0
+          loadingCache || busy ? (
+            <>
+              <p className="loading-note" role="status">
+                Carregando episódios do Creators…
+              </p>
+              <Skeleton.Group as="row" count={5} label="Carregando episódios…" />
+            </>
+          ) : (
+            <div className="empty-hint">
+              {episodes.length === 0
                 ? "Nenhum episódio em cache. Clique em Atualizar."
                 : "Nenhum episódio neste filtro."}
-          </div>
+            </div>
+          )
         ) : (
           filtered.map((e) => {
             const key = (e.href || e.title) + (e.date || "");
@@ -287,13 +294,7 @@ export default function SpotifyPage() {
                   onClick={() => setExpanded(open ? null : key)}
                 >
                   <div className="episode-thumb">
-                    {e.thumb ? (
-                      <img src={e.thumb} alt="" loading="lazy" />
-                    ) : (
-                      <div className="episode-thumb-fallback" aria-hidden="true">
-                        ▶
-                      </div>
-                    )}
+                    <Thumb src={e.thumb} fallbackText="▶" />
                   </div>
                   <div className="episode-body">
                     <div className="episode-title-row">
@@ -346,12 +347,12 @@ export default function SpotifyPage() {
                         </div>
                       )}
                     </div>
-                    <div className="row" style={{ gap: "0.35rem", marginTop: "0.75rem" }}>
+                    <div className="row episode-actions">
                       <button
                         type="button"
                         className="btn btn-ghost"
                         disabled={busy}
-                        onClick={() => del(e.title)}
+                        onClick={() => setPendingDelete(e.title)}
                       >
                         Excluir
                       </button>
@@ -363,6 +364,18 @@ export default function SpotifyPage() {
           })
         )}
       </div>
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title="Excluir episódio?"
+          message={`“${pendingDelete}” será removido do Spotify for Creators. Não dá pra desfazer.`}
+          confirmLabel="Excluir"
+          danger
+          busy={busy}
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
     </div>
   );
 }

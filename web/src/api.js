@@ -48,6 +48,7 @@ export const api = {
         videoOffset: opts.videoOffset || 0,
         playlistLimit: opts.playlistLimit,
         videosOnly: Boolean(opts.videosOnly),
+        refresh: Boolean(opts.refresh),
       }),
       timeoutMs: 180_000,
     }),
@@ -64,6 +65,14 @@ export const api = {
   importVideos: (payload) =>
     req("/api/import", { method: "POST", body: JSON.stringify(payload) }),
   queue: () => req("/api/queue"),
+  /** Only rows touched since `iso` — used by the polling fallback. */
+  queueSince: (iso) =>
+    req(`/api/queue?since=${encodeURIComponent(iso)}`),
+  logs: (jobId) =>
+    req(`/api/logs${jobId ? `?jobId=${encodeURIComponent(jobId)}` : ""}`),
+  /** URL for EventSource — kept here so path logic lives in one place. */
+  eventsUrl: (lastEventId) =>
+    `/api/events${lastEventId ? `?lastEventId=${encodeURIComponent(lastEventId)}` : ""}`,
   jobs: () => req("/api/jobs"),
   job: (id) => req(`/api/jobs/${id}`),
   cancelJob: (id) =>
