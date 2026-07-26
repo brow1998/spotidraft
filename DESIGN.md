@@ -2,17 +2,19 @@
 name: Spotidraft
 description: YouTube → Spotify for Creators drafts — dark, minimal, charismatic tool UI
 colors:
-  bg: "oklch(0.12 0.000 0)"
-  surface: "oklch(0.16 0.008 170)"
-  surface-raised: "oklch(0.20 0.010 170)"
-  ink: "oklch(0.96 0.010 170)"
-  muted: "oklch(0.72 0.020 170)"
-  primary: "oklch(0.72 0.12 170)"
-  primary-deep: "oklch(0.52 0.10 170)"
-  accent: "oklch(0.78 0.14 45)"
-  danger: "oklch(0.62 0.18 25)"
-  success: "oklch(0.72 0.12 150)"
-  border: "oklch(0.28 0.012 170)"
+  bg: "oklch(0.11 0 0)"
+  surface: "oklch(0.155 0.01 170)"
+  surface-raised: "oklch(0.195 0.012 170)"
+  ink: "oklch(0.96 0.008 170)"
+  muted: "oklch(0.68 0.018 170)"
+  primary: "oklch(0.7 0.11 170)"
+  primary-deep: "oklch(0.48 0.09 170)"
+  accent: "oklch(0.82 0.15 55)"
+  danger: "oklch(0.65 0.17 25)"
+  success: "oklch(0.72 0.11 155)"
+  border: "oklch(0.26 0.014 170)"
+  border-strong: "oklch(0.34 0.018 170)"
+  focus: "oklch(0.78 0.1 170)"
 typography:
   display:
     fontFamily: "Plus Jakarta Sans, system-ui, sans-serif"
@@ -33,19 +35,21 @@ typography:
     lineHeight: 1.3
     letterSpacing: "0.02em"
 rounded:
-  sm: "6px"
-  md: "10px"
-  lg: "14px"
-spacing:
-  xs: "4px"
   sm: "8px"
-  md: "16px"
-  lg: "24px"
-  xl: "40px"
+  md: "12px"
+  pill: "999px"
+spacing:
+  1: "4px"
+  2: "8px"
+  3: "12px"
+  4: "16px"
+  5: "24px"
+  6: "32px"
+  7: "48px"
 components:
   button-primary:
     backgroundColor: "{colors.primary}"
-    textColor: "{colors.bg}"
+    textColor: "#fff"
     rounded: "{rounded.sm}"
     padding: "10px 18px"
   button-primary-hover:
@@ -59,6 +63,26 @@ components:
   nav-active:
     backgroundColor: "{colors.surface-raised}"
     textColor: "{colors.ink}"
+    rounded: "{rounded.sm}"
+  progress-bar:
+    trackColor: "oklch(0.24 0.012 170)"
+    fillColor: "{colors.primary}"
+    fillColorUpload: "{colors.accent}"
+    height: "8px"
+    rounded: "{rounded.pill}"
+  log-panel:
+    backgroundColor: "oklch(0.09 0 0)"
+    textColor: "{colors.muted}"
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
+    rounded: "{rounded.sm}"
+  toast:
+    backgroundColor: "{colors.surface-raised}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.md}"
+    accentBorder: "3px solid {colors.success} | {colors.danger} | {colors.primary}"
+  skeleton:
+    baseColor: "oklch(0.19 0.01 170)"
+    highlightColor: "oklch(0.24 0.012 170)"
     rounded: "{rounded.sm}"
 ---
 
@@ -92,11 +116,13 @@ Mood phrase: *late-night studio desk — mineral teal glow on charcoal metal, no
 
 ## Components
 
-- **Shell**: sticky left nav (Importar, Progresso, Sessão) + top strip with session chip + “Abrir no Spotify”.
+- **Shell**: sticky left nav + sticky top strip with session chip + “Abrir no Spotify”. Content is centred (`margin-inline: auto`) inside a 920px measure.
 - **Primary button**: teal fill with white text on saturated mid-L fills.
 - **Ghost / secondary**: border or text-only.
-- **Table**: dense video picker with checkboxes; options bar above.
-- **Progress list**: status pill + title + error snippet; no metric-card grid.
+- **Table**: dense video picker with checkboxes; options bar above. Selection checkboxes are hover/focus-revealed and stay visible once checked — an affordance, not content.
+- **Progress**: two stacked bars per job (download teal, upload amber), each with the in-flight item, speed and ETA. Indeterminate fill for the ffmpeg merge, which reports no progress.
+- **Toasts**: bottom-right, two live regions (polite for ok/info, assertive for errors). Errors persist until dismissed. Mounted above the router so a message survives navigation.
+- **Log panel**: collapsed by default; monospace, capped, tail-following until the user scrolls up.
 - **Curl panel**: monospace textarea, paste → Salvar sessão.
 
 ## Do's and Don'ts
@@ -106,9 +132,12 @@ Mood phrase: *late-night studio desk — mineral teal glow on charcoal metal, no
 - Show URL resolution before upload.
 - Default imports to draft.
 - Make session expiry obvious and recoverable via curl paste.
+- Show real progress for anything slow: a bar, the current item, and why it's waiting.
+- Put errors next to the control that caused them; keep destructive actions behind a styled dialog, never `window.confirm`.
 
 **Don't**
 - Generic SaaS card grids or purple gradients.
 - Inter / Roboto / system-only stacks as brand voice.
-- Decorative motion or page-load choreography.
+- Decorative motion or page-load choreography — the only animation is functional (progress, skeleton), and it respects `prefers-reduced-motion`.
 - Surprise-publish or hide failed jobs.
+- Interrupt with a dialog to ask what an action already implied.

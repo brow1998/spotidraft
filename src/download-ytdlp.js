@@ -25,24 +25,101 @@ export function resolveYtDlp() {
   return "yt-dlp";
 }
 
-function run(cmd, args, { quiet = false } = {}) {
+/**
+ * Kill a child and anything it spawned. yt-dlp forks ffmpeg for the merge step,
+ * so signalling only the parent orphans a process that keeps writing to disk.
+ */
+function killTree(child) {
+  if (!child.pid || child.exitCode !== null) return;
+  if (process.platform === "win32") {
+    try {
+      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+      });
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    /* ignore */
+  }
+  const hard = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* ignore */
+    }
+  }, 5000);
+  hard.unref?.();
+  child.once("close", () => clearTimeout(hard));
+}
+
+function abortError(message) {
+  const err = new Error(message);
+  err.name = "AbortError";
+  return err;
+}
+
+function run(cmd, args, { quiet = false, onLine, signal } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError("cancelado"));
+
     const child = spawn(cmd, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env },
     });
     let stdout = "";
     let stderr = "";
+    let aborted = false;
+
+    const onAbort = () => {
+      aborted = true;
+      killTree(child);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    // Line-buffer each stream so onLine sees whole lines even when a chunk
+    // splits mid-line (yt-dlp emits progress ~10x/s with --newline).
+    const buffers = { stdout: "", stderr: "" };
+    const feed = (name, chunk) => {
+      if (!onLine) return;
+      buffers[name] += chunk;
+      const parts = buffers[name].split(/\r?\n/);
+      buffers[name] = parts.pop() ?? "";
+      for (const line of parts) if (line.length) onLine(line, name);
+    };
+    const flush = () => {
+      if (!onLine) return;
+      for (const name of ["stdout", "stderr"]) {
+        const rest = buffers[name];
+        buffers[name] = "";
+        if (rest.length) onLine(rest, name);
+      }
+    };
+
     child.stdout.on("data", (d) => {
-      stdout += d;
+      const s = String(d);
+      stdout += s;
+      feed("stdout", s);
       if (!quiet) process.stderr.write(d);
     });
     child.stderr.on("data", (d) => {
-      stderr += d;
+      const s = String(d);
+      stderr += s;
+      feed("stderr", s);
       if (!quiet) process.stderr.write(d);
     });
-    child.on("error", reject);
+    child.on("error", (e) => {
+      signal?.removeEventListener("abort", onAbort);
+      reject(e);
+    });
     child.on("close", (code) => {
+      signal?.removeEventListener("abort", onAbort);
+      flush();
+      if (aborted) return reject(abortError("cancelado pelo usuário"));
       if (code === 0) resolve({ stdout, stderr });
       else
         reject(
@@ -52,6 +129,113 @@ function run(cmd, args, { quiet = false } = {}) {
         );
     });
   });
+}
+
+const PROGRESS_PREFIX = "SPDPROG";
+
+/** yt-dlp writes "NA" for values it doesn't know yet. */
+function numOrNull(raw) {
+  if (raw == null || raw === "NA" || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Parse one line of yt-dlp output into a progress signal.
+ * Pure — the interesting cases are covered by test/ytdlp-progress.test.js.
+ *
+ * Returns one of:
+ *   { kind: "progress", pct, downloaded, total, speed, eta }
+ *   { kind: "destination", ext }   — a new stream started (video, then audio)
+ *   { kind: "merge" }              — ffmpeg is muxing, no progress available
+ *   null                           — not a progress line
+ */
+export function parseYtDlpProgressLine(line) {
+  if (typeof line !== "string") return null;
+  const s = line.trim();
+  if (!s) return null;
+
+  if (s.startsWith(PROGRESS_PREFIX)) {
+    const [, downloadedRaw, totalRaw, estimateRaw, speedRaw, etaRaw] =
+      s.split(/\s+/);
+    const downloaded = numOrNull(downloadedRaw);
+    const total = numOrNull(totalRaw) ?? numOrNull(estimateRaw);
+    const pct =
+      downloaded != null && total ? Math.min(100, (downloaded / total) * 100) : null;
+    return {
+      kind: "progress",
+      pct,
+      downloaded,
+      total,
+      speed: numOrNull(speedRaw),
+      eta: numOrNull(etaRaw),
+    };
+  }
+
+  const dest = s.match(/^\[download\]\s+Destination:\s+(.+)$/i);
+  if (dest) {
+    const ext = path.extname(dest[1]).replace(/^\./, "").toLowerCase() || null;
+    return { kind: "destination", ext };
+  }
+
+  if (/^\[Merger\]/i.test(s)) return { kind: "merge" };
+
+  return null;
+}
+
+/**
+ * Turn the raw per-stream signals into a single monotonic view.
+ *
+ * The default selector is `bv*+ba/b`, so yt-dlp downloads video, then audio,
+ * then merges — the raw percentage runs 0→100 twice. Track which stream we are
+ * on and fold both into one overall value, and surface the merge explicitly:
+ * ffmpeg can take a minute on a long file while emitting nothing at all.
+ */
+export function createProgressTracker({ audioOnly = false } = {}) {
+  const streams = audioOnly ? 1 : 2;
+  let streamIndex = -1;
+  let merging = false;
+
+  return function track(line) {
+    const sig = parseYtDlpProgressLine(line);
+    if (!sig) return null;
+
+    if (sig.kind === "destination") {
+      if (streamIndex < streams - 1) streamIndex += 1;
+      return null;
+    }
+    if (sig.kind === "merge") {
+      merging = true;
+      return { stage: "merge", pct: null, overallPct: null, speed: null, eta: null };
+    }
+    if (merging) return null;
+
+    const idx = Math.max(0, streamIndex);
+    const stage = audioOnly || idx === 0 ? (audioOnly ? "audio" : "video") : "audio";
+    const overallPct =
+      sig.pct == null ? null : ((idx + sig.pct / 100) / streams) * 100;
+    return {
+      stage,
+      pct: sig.pct,
+      overallPct,
+      speed: sig.speed,
+      eta: sig.eta,
+      downloaded: sig.downloaded,
+      total: sig.total,
+    };
+  };
+}
+
+/**
+ * Archive path for a single-video download.
+ *
+ * yt-dlp appends to the archive with no locking, so two processes sharing one
+ * file can interleave writes. One file per video removes the contention while
+ * keeping the "already downloaded, skip it" behaviour on re-runs.
+ */
+export function archiveForVideo(dir, videoId) {
+  const safe = String(videoId).replace(/[^\w-]/g, "_");
+  return path.join(dir, `.archive-${safe}.txt`);
 }
 
 /** Derive a stable folder name from video / playlist / channel URL. */
@@ -447,6 +631,9 @@ export async function downloadYoutube({
   withDescription = true,
   maxHeight,
   videoIds,
+  onProgress,
+  onLog,
+  signal,
 } = {}) {
   if (!url) throw new Error("url obrigatória");
   const dir = outDir || path.join(DOWNLOADS_DIR, sourceDirName(url));
@@ -465,7 +652,10 @@ export async function downloadYoutube({
       await downloadOne({
         url: watch,
         dir,
-        archive,
+        // Per-video archive: each call here handles exactly one id, so a shared
+        // archive.txt buys nothing but makes two concurrent downloads write to
+        // the same file. Splitting it is what allows parallel downloads at all.
+        archive: archiveForVideo(dir, id),
         outTpl,
         bin,
         skipDownload,
@@ -473,6 +663,9 @@ export async function downloadYoutube({
         withThumb,
         withDescription,
         maxHeight,
+        signal,
+        onProgress: onProgress && ((p) => onProgress({ ...p, id })),
+        onLog: onLog && ((line, stream) => onLog(line, stream, id)),
       });
     }
     const files = listDownloadedMedia(dir);
@@ -491,6 +684,9 @@ export async function downloadYoutube({
     withDescription,
     maxHeight,
     limit,
+    signal,
+    onProgress,
+    onLog,
   });
 
   const files = listDownloadedMedia(dir);
@@ -510,6 +706,9 @@ async function downloadOne({
   withDescription,
   maxHeight,
   limit,
+  signal,
+  onProgress,
+  onLog,
 }) {
   const mergeFmt = audioOnly ? "m4a" : "mp4";
   const args = [
@@ -519,6 +718,10 @@ async function downloadOne({
     formatSelector({ audioOnly, maxHeight }),
     "--merge-output-format",
     mergeFmt,
+    "--newline",
+    "--no-color",
+    "--progress-template",
+    `download:${PROGRESS_PREFIX} %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s %(progress.speed)s %(progress.eta)s`,
     "--write-info-json",
     "--no-write-playlist-metafiles",
     "--download-archive",
@@ -546,7 +749,22 @@ async function downloadOne({
   }
   console.error(`[ytdlp] ${bin}`);
   console.error(`[ytdlp] → ${dir}`);
-  await run(bin, args);
+
+  const track = createProgressTracker({ audioOnly });
+  const onLine = (onProgress || onLog)
+    ? (line, stream) => {
+        if (onProgress) {
+          const p = track(line);
+          if (p) onProgress(p);
+        }
+        // Progress lines are noise in a log panel — they arrive ~10x/s.
+        if (onLog && !line.trimStart().startsWith(PROGRESS_PREFIX)) {
+          onLog(line, stream);
+        }
+      }
+    : undefined;
+
+  await run(bin, args, { onLine, signal });
 }
 
 export function listDownloadedMp4s(dir) {

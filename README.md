@@ -6,17 +6,23 @@ CLI + UI web local. Default: sempre draft (nunca publica sozinho).
 
 ## O que faz
 
-- **Home** — canal favorito, recentes (infinite scroll), playlists, fila → Spotify
+- **Home** — canais memorizados, recentes (infinite scroll), playlists, fila → Spotify
 - **Importar** — cola qualquer URL solta do YouTube
-- **Progresso** — jobs / episódios na fila
+- **Progresso** — barras ao vivo (download e envio), passo atual e log técnico
 - **Spotify** — drafts no Creators (cache + atualizar)
 - **Sessão** — cola o curl de login do Creators
+
+Download e envio rodam **sobrepostos**: o vídeo 1 sobe enquanto o 2 baixa. Cada
+etapa tem faixas paralelas configuráveis, e o arquivo local é apagado assim que
+o rascunho existe no Spotify.
 
 ## Requisitos
 
 - Node.js **≥ 22**
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) no `PATH` (ou `YT_DLP=…`)
 - Chromium do Playwright (`npx playwright install chromium`)
+- **ffmpeg** no `PATH` — necessário para juntar áudio+vídeo. Sem ele, só o modo
+  "só áudio" funciona.
 
 ## Setup
 
@@ -52,6 +58,21 @@ Produção local (API serve o build):
 npm run build:web && npm run server
 # http://127.0.0.1:8787
 ```
+
+### Desenvolver contra a sessão do app desktop
+
+Se você já usa o app Electron, `npm run dev:server` aponta o servidor para os
+**mesmos** dados e cookies dele — nada de colar cURL de novo. Também resolve o
+`yt-dlp` do `vendor/` (ou do app instalado), o que evita o `spawn yt-dlp ENOENT`
+quando ele não está no `PATH`.
+
+```bash
+npm run build:web && npm run dev:server
+# http://127.0.0.1:8787
+```
+
+> Não rode o app Electron e o `dev:server` enviando episódios ao mesmo tempo: o
+> Chromium tranca o diretório de perfil, e o segundo fica na fila até liberar.
 
 ## App desktop (Electron)
 
@@ -100,7 +121,10 @@ node bin/spotidraft.js status
 npm test
 ```
 
-Cobertura atual: helpers puros (`normalizeChannelInput`, idioma yt-dlp, nomes de pasta). Fluxos Playwright / Creators ainda são manuais.
+Cobertura: lógica pura e o acesso ao SQLite — parsing de progresso do yt-dlp,
+cálculo de progresso do job, serialização SSE, classificação de erro do
+Creators, política de requeue, limpeza de disco e as faixas de concorrência.
+Os fluxos que dirigem o browser continuam sendo verificados manualmente.
 
 ## Config / dados locais (não vão pro git)
 
@@ -110,7 +134,20 @@ Cobertura atual: helpers puros (`normalizeChannelInput`, idioma yt-dlp, nomes de
 | `profiles/` | browser profile / cookies (modo CLI/server) |
 | `vendor/` | yt-dlp + Chromium empacotados (gerados no prepare) |
 
-Idioma dos títulos do YouTube: `YT_LANG=pt` (padrão). O yt-dlp usa o código `pt` (não `pt-BR`).
+### Variáveis de ambiente
+
+| Variável | Padrão | Para quê |
+|----------|--------|----------|
+| `PORT` | `8787` | Porta da API/UI |
+| `YT_LANG` | `pt` | Idioma dos títulos. O yt-dlp usa `pt`, não `pt-BR` |
+| `YT_DLP` | auto | Caminho do binário do yt-dlp |
+| `SPOTIDRAFT_DOWNLOAD_LANES` | `2` | Downloads simultâneos (teto 4) |
+| `SPOTIDRAFT_UPLOAD_LANES` | `2` | Envios simultâneos ao Creators (teto 5) |
+| `SPOTIDRAFT_DATA` | `data/` | Config, fila SQLite, downloads, caches |
+| `SPOTIDRAFT_PROFILE` | `profiles/creators` | Perfil do browser e `cookies.json` |
+
+As faixas são conservadoras de propósito. Medições e o porquê dos tetos estão em
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Deploy / 4K longo
 

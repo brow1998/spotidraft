@@ -1,6 +1,6 @@
 {
   "name": "spotidraft",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Spotidraft — YouTube to Spotify for Creators drafts",
@@ -22,12 +22,14 @@
     "test": "node --test test/**/*.test.js",
     "electron:yt-dlp": "node scripts/fetch-yt-dlp.mjs",
     "electron:browsers": "node scripts/fetch-playwright-browsers.mjs",
-    "electron:prepare": "npm run build:web && npm run electron:yt-dlp && npm run electron:browsers",
+    "electron:prepare": "npm run build:web && npm run electron:icons && npm run electron:yt-dlp && npm run electron:browsers",
     "electron:dev": "npm run build:web && electron .",
     "electron:dist": "npm run electron:prepare && electron-builder --publish never",
     "electron:dist:linux": "npm run electron:prepare && electron-builder --linux AppImage --publish never",
     "electron:dist:win": "npm run electron:prepare && electron-builder --win nsis --publish never",
-    "electron:dist:mac": "npm run electron:prepare && electron-builder --mac dmg --publish never"
+    "electron:dist:mac": "npm run electron:prepare && electron-builder --mac dmg --publish never",
+    "dev:server": "bash scripts/dev-server.sh",
+    "electron:icons": "node scripts/make-icons.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -56,7 +58,8 @@
       "node_modules/**/*",
       "!node_modules/.cache/**/*",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
-      "!**/node_modules/.bin/**"
+      "!**/node_modules/.bin/**",
+      "electron/assets/**/*"
     ],
     "asar": true,
     "asarUnpack": [
@@ -71,24 +74,37 @@
       {
         "from": "vendor/yt-dlp",
         "to": "bin",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "vendor/ms-playwright",
         "to": "ms-playwright",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "linux": {
-      "target": ["AppImage"],
-      "category": "AudioVideo"
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo",
+      "icon": "electron/assets/icon.png"
     },
     "win": {
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ],
+      "icon": "electron/assets/icon.png"
     },
     "mac": {
-      "target": ["dmg"],
-      "category": "public.app-category.productivity"
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "electron/assets/icon.png"
     },
     "nsis": {
       "oneClick": true,

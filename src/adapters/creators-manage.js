@@ -1,38 +1,34 @@
 import fs from "node:fs";
 import { chromium } from "playwright";
-import { DEFAULT_CREATORS_URL, PROFILE_DIR } from "../paths.js";
+import { PROFILE_DIR } from "../paths.js";
 import { loadConfig, loadCookies } from "../session.js";
-
-function launchOpts(headless) {
-  return {
-    headless,
-    viewport: { width: 1400, height: 900 },
-    args: ["--disable-blink-features=AutomationControlled"],
-  };
-}
+import { withProfileLease } from "./profile-lease.js";
+import {
+  dismissCookies,
+  episodesUrl,
+  launchOpts,
+} from "./creators-dom.js";
 
 async function withCreatorsPage(fn, { headless = true } = {}) {
-  fs.mkdirSync(PROFILE_DIR, { recursive: true });
-  const context = await chromium.launchPersistentContext(
-    PROFILE_DIR,
-    launchOpts(headless)
-  );
-  const cookies = loadCookies();
-  if (cookies?.length) await context.addCookies(cookies);
-  const page = context.pages()[0] || (await context.newPage());
-  try {
-    return await fn(page, context);
-  } finally {
-    await context.close();
-  }
-}
-
-function episodesUrl() {
-  const cfg = loadConfig();
-  return (
-    cfg?.episodesUrl ||
-    process.env.CREATORS_EPISODES_URL ||
-    DEFAULT_CREATORS_URL
+  // Chromium locks the profile dir exclusively, and the upload pipeline can
+  // hold it for a whole batch — queue behind it instead of failing to launch.
+  return withProfileLease(
+    async () => {
+      fs.mkdirSync(PROFILE_DIR, { recursive: true });
+      const context = await chromium.launchPersistentContext(
+        PROFILE_DIR,
+        launchOpts(headless)
+      );
+      const cookies = loadCookies();
+      if (cookies?.length) await context.addCookies(cookies);
+      const page = context.pages()[0] || (await context.newPage());
+      try {
+        return await fn(page, context);
+      } finally {
+        await context.close();
+      }
+    },
+    { label: "catálogo do Creators" }
   );
 }
 
@@ -60,36 +56,57 @@ export function isValidShowName(name) {
   ) {
     return false;
   }
+  // Creators UI chrome and stray a11y strings that a DOM scan can pick up.
+  if (
+    /^(checkbox|button|label|link|menu|dialog|image|avatar|loading|notifications?|home|episodes?|analytics|comments|monetize|settings|create|wizard|olá.*)$/i.test(
+      t
+    )
+  ) {
+    return false;
+  }
+  // "checkbox label", "button close" — two generic UI words in a row.
+  if (/\b(checkbox|button|label|aria|role|tooltip|placeholder)\b/i.test(t)) {
+    return false;
+  }
   return true;
 }
 
-async function dismissCookies(page) {
-  try {
-    const allow = page.getByRole("button", {
-      name: /allow all|accept all|aceitar todos|permitir todos/i,
-    });
-    if (await allow.count()) await allow.first().click({ timeout: 2000 });
-  } catch {
-    /* ignore */
-  }
-  try {
-    const close = page.locator(
-      '#onetrust-close-btn-container button, button[aria-label*="Close" i], .onetrust-close-btn-handler'
-    );
-    if (await close.count()) await close.first().click({ timeout: 1500 });
-  } catch {
-    /* ignore */
-  }
-  await page.waitForTimeout(400);
-}
-
 /**
- * Show name lives on the home page ("Gweek"), not on the episodes list
- * (which starts with the "New episode" CTA).
+ * Read the show name out of the sidebar, anchored to the cover image.
+ *
+ * The Creators nav lives in shadow DOM, which `page.evaluate` +
+ * `querySelectorAll` cannot see — the old scan only reached the light DOM and
+ * came back with things like "checkbox label". Playwright locators pierce
+ * shadow roots, so we find the cover with one and walk up from there: the name
+ * is the nearest ancestor that actually has text.
  */
-async function scrapeShowName(page) {
-  const meta = await scrapeShowMeta(page);
-  return meta?.name || null;
+async function scrapeShowNameFromNav(page) {
+  const cover = page
+    .locator(
+      'img[src*="podcast_uploaded"], img[src*="anchor-generated-image-bank"]'
+    )
+    .first();
+
+  try {
+    await cover.waitFor({ state: "attached", timeout: 8000 });
+  } catch {
+    return null;
+  }
+
+  const found = await cover
+    .evaluate((img) => {
+      let cur = img;
+      for (let d = 0; d < 6 && cur.parentElement; d++) {
+        cur = cur.parentElement;
+        const t = (cur.innerText || "").trim().replace(/\s+/g, " ");
+        // First ancestor with short, single-line text is the show title.
+        if (t && t.length <= 60 && !t.includes("\n")) return t;
+      }
+      return null;
+    })
+    .catch(() => null);
+
+  return isValidShowName(found) ? found.trim() : null;
 }
 
 async function scrapeShowMeta(page) {
@@ -128,31 +145,7 @@ async function scrapeShowMeta(page) {
     /* no nav cover yet */
   }
 
-  const name = await page.evaluate(() => {
-    const skip =
-      /customize|publish|launch|setup|email|episode|spotify|home|analytics|comments|monetize|settings|privacy|cookie|store and access|consent|allow all|new episode|novo episódio|create|your shows/i;
-    const bad = (t) =>
-      !t ||
-      t.length < 2 ||
-      t.length > 40 ||
-      t.split(/\s+/).length > 4 ||
-      skip.test(t);
-
-    // Prefer text next to the show avatar in the sidebar/nav
-    const nodes = [...document.querySelectorAll("nav span, nav div, h1, h2, span")];
-    const candidates = [];
-    for (const el of nodes) {
-      if (el.children.length > 0) continue;
-      const t = (el.textContent || "").trim().replace(/\s+/g, " ");
-      if (bad(t)) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.top < 0 || rect.top > 220) continue;
-      if (rect.left > 320) continue;
-      candidates.push({ t, top: rect.top, left: rect.left });
-    }
-    candidates.sort((a, b) => a.top - b.top || a.left - b.left);
-    return candidates[0]?.t || null;
-  });
+  const name = await scrapeShowNameFromNav(page);
 
   return {
     name: isValidShowName(name) ? name.trim() : null,
@@ -200,6 +193,46 @@ async function scrapeEpisodesOnPage(page) {
     }
     return rows;
   });
+}
+
+/**
+ * Park the page on the episodes list and wait for the table to hydrate.
+ *
+ * Callers arrive here from the show home (scrapeShowMeta navigates there for
+ * the name and cover), so we cannot assume the episodes table is on screen.
+ */
+async function ensureEpisodesPage(page) {
+  const target = episodesUrl();
+  if (!target) throw new Error("episodesUrl não configurada — importe o cURL de novo.");
+
+  if (!/\/episodes\/?$/i.test(page.url())) {
+    await page.goto(target, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.waitForTimeout(1200);
+    await dismissCookies(page);
+  }
+
+  if (/accounts\.spotify\.com|login/i.test(page.url())) {
+    throw new Error(
+      "Sessão do Creators expirada — cole um novo cURL na aba Sessão."
+    );
+  }
+
+  // The list is an SPA table; give it a chance to render before scraping.
+  try {
+    await page.locator("table tbody tr").first().waitFor({
+      state: "visible",
+      timeout: 30_000,
+    });
+  } catch {
+    // An empty show has no rows at all — that is a valid, non-error state.
+    const emptyState =
+      (await page.getByText(/no episodes|nenhum episódio/i).count()) > 0;
+    if (!emptyState) {
+      throw new Error(
+        "A lista de episódios não carregou — o Creators pode ter mudado a página."
+      );
+    }
+  }
 }
 
 async function scrapeAllEpisodes(page) {

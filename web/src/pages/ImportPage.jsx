@@ -1,53 +1,25 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-
-function fmtDur(sec) {
-  if (sec == null) return "—";
-  const s = Math.round(Number(sec));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const r = s % 60;
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-  }
-  return `${m}:${String(r).padStart(2, "0")}`;
-}
-
-function ytThumb(id) {
-  return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
-}
-
-/** Playlist / canal / lista — não vídeo solto. */
-export function isListUrl(raw) {
-  try {
-    const u = new URL(raw.trim());
-    if (u.searchParams.get("list")) return true;
-    const p = u.pathname;
-    if (p.includes("/playlist")) return true;
-    if (p.includes("/channel/")) return true;
-    if (p.includes("/c/")) return true;
-    if (p.includes("/user/")) return true;
-    if (p.startsWith("/@")) return true;
-    if (p.includes("/videos")) return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
+import { formatDuration as fmtDur } from "../format";
+import { isListUrl, isYoutubeUrl, watchUrl, ytThumb } from "../lib/youtube";
+import { useToast } from "../toast/ToastProvider.jsx";
+import { useImportRunner } from "../hooks/useImportRunner.js";
+import {
+  DEFAULT_DOWNLOAD_OPTIONS,
+  DownloadOptions,
+} from "../components/DownloadOptions.jsx";
+import { Skeleton } from "../components/Skeleton.jsx";
+import { Thumb } from "../components/Thumb.jsx";
 
 export default function ImportPage() {
-  const nav = useNavigate();
+  const toast = useToast();
+  const { run: runImport, busy: importing } = useImportRunner();
   const [url, setUrl] = useState("");
   const [limit, setLimit] = useState("");
   const [videos, setVideos] = useState([]);
   const [selected, setSelected] = useState(() => new Set());
-  const [audioOnly, setAudioOnly] = useState(false);
-  const [withThumb, setWithThumb] = useState(true);
-  const [withDescription, setWithDescription] = useState(true);
-  const [maxHeight, setMaxHeight] = useState("");
+  const [options, setOptions] = useState(DEFAULT_DOWNLOAD_OPTIONS);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
   const [expanded, setExpanded] = useState(null);
 
   const showLimit = useMemo(
@@ -71,50 +43,37 @@ export default function ImportPage() {
   };
 
   const list = async () => {
+    if (!isYoutubeUrl(url)) {
+      toast.error("Isso não parece um link do YouTube.");
+      return;
+    }
     setBusy(true);
-    setMsg(null);
     try {
-      const lim = showLimit && limit ? Number(limit) : undefined;
+      // The field is free text, so guard against "abc" reaching the API as NaN.
+      const parsed = Number(limit);
+      const lim =
+        showLimit && limit && Number.isFinite(parsed) && parsed > 0
+          ? Math.floor(parsed)
+          : undefined;
       const data = await api.listYoutube(url.trim(), lim);
       setVideos(data.videos || []);
       setSelected(new Set((data.videos || []).map((v) => v.id)));
       setExpanded(null);
-      setMsg({ type: "ok", text: `${data.count} vídeo(s) encontrados` });
+      toast.ok(`${data.count} vídeo(s) encontrados.`);
     } catch (e) {
-      setMsg({ type: "error", text: e.message });
+      toast.error(e.message);
     } finally {
       setBusy(false);
     }
   };
 
-  const startImport = async () => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const ids = [...selected];
-      const titles = {};
-      for (const v of videos) {
-        if (ids.includes(v.id)) titles[v.id] = v.title;
-      }
-      const data = await api.importVideos({
-        url: url.trim(),
-        videoIds: ids,
-        titles,
-        audioOnly,
-        withThumb,
-        withDescription,
-        maxHeight: maxHeight ? Number(maxHeight) : null,
-      });
-      setMsg({
-        type: "ok",
-        text: `Job ${data.jobId.slice(0, 8)}… iniciado no servidor. Acompanhe em Progresso.`,
-      });
-      nav("/progress");
-    } catch (e) {
-      setMsg({ type: "error", text: e.message });
-    } finally {
-      setBusy(false);
+  const startImport = () => {
+    const ids = [...selected];
+    const titles = {};
+    for (const v of videos) {
+      if (ids.includes(v.id)) titles[v.id] = v.title;
     }
+    return runImport({ url: url.trim(), ids, titles, options });
   };
 
   const selectedCount = selected.size;
@@ -126,7 +85,6 @@ export default function ImportPage() {
         Cole um link de vídeo, playlist ou canal. Revise a lista antes de enviar
         como draft.
       </p>
-      {msg && <div className={`msg ${msg.type}`}>{msg.text}</div>}
       <div className="field">
         <label htmlFor="url">URL do YouTube</label>
         <div className="url-row">
@@ -158,6 +116,9 @@ export default function ImportPage() {
           <label htmlFor="limit">Limite (opcional)</label>
           <input
             id="limit"
+            type="number"
+            min="1"
+            step="1"
             value={limit}
             onChange={(e) => setLimit(e.target.value)}
             placeholder="ex. 10"
@@ -168,53 +129,13 @@ export default function ImportPage() {
 
       {videos.length > 0 && (
         <>
-          <div className="options">
-            <label>
-              <input
-                type="checkbox"
-                checked={audioOnly}
-                onChange={(e) => setAudioOnly(e.target.checked)}
-              />
-              Só áudio
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={withThumb}
-                onChange={(e) => setWithThumb(e.target.checked)}
-                disabled={audioOnly}
-              />
-              Thumbnail
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={withDescription}
-                onChange={(e) => setWithDescription(e.target.checked)}
-              />
-              Descrição
-            </label>
-            <label>
-              Qualidade
-              <select
-                value={maxHeight}
-                onChange={(e) => setMaxHeight(e.target.value)}
-                disabled={audioOnly}
-                style={{ marginLeft: 8 }}
-              >
-                <option value="">Melhor</option>
-                <option value="1080">≤ 1080p</option>
-                <option value="720">≤ 720p</option>
-                <option value="480">≤ 480p</option>
-              </select>
-            </label>
-          </div>
+          <DownloadOptions value={options} onChange={setOptions} />
 
-          <div className="row" style={{ marginBottom: "0.75rem", flexWrap: "wrap" }}>
+          <div className="row import-select-row">
             <button type="button" className="btn btn-ghost" onClick={toggleAll}>
               {allSelected ? "Desmarcar todos" : "Selecionar todos"}
             </button>
-            <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
+            <span className="import-select-count">
               {selectedCount} de {videos.length} selecionados
             </span>
           </div>
@@ -223,7 +144,7 @@ export default function ImportPage() {
             {videos.map((v) => {
               const open = expanded === v.id;
               const isOn = selected.has(v.id);
-              const watch = v.url || `https://www.youtube.com/watch?v=${v.id}`;
+              const watch = v.url || watchUrl(v.id);
               return (
                 <article
                   key={v.id}
@@ -247,7 +168,7 @@ export default function ImportPage() {
                       onClick={() => setExpanded(open ? null : v.id)}
                     >
                       <div className="episode-thumb">
-                        <img src={ytThumb(v.id)} alt="" loading="lazy" />
+                        <Thumb src={ytThumb(v.id)} fallbackText="▶" />
                       </div>
                       <div className="episode-body">
                         <div className="episode-title-row">
@@ -307,13 +228,21 @@ export default function ImportPage() {
 
           <button
             type="button"
-            className="btn btn-primary"
-            style={{ marginTop: "1rem" }}
-            disabled={busy || selectedCount === 0}
+            className="btn btn-primary import-submit"
+            disabled={busy || importing || selectedCount === 0}
             onClick={startImport}
           >
-            Enviar {selectedCount} como draft
+            {importing ? "Enviando…" : `Enviar ${selectedCount} como draft`}
           </button>
+        </>
+      )}
+
+      {busy && videos.length === 0 && (
+        <>
+          <p className="loading-note" role="status">
+            Consultando o YouTube… isso pode levar alguns segundos.
+          </p>
+          <Skeleton.Group as="row" count={5} label="Carregando vídeos…" />
         </>
       )}
     </div>

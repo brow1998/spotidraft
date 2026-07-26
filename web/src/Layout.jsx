@@ -1,6 +1,8 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { Logo } from "./components/Logo.jsx";
+import { loadSidebarCollapsed, saveSidebarCollapsed } from "./sidebarPrefs";
 
 const SPOTIFY_FALLBACK = "https://creators.spotify.com/";
 
@@ -15,6 +17,18 @@ function isValidShowName(name) {
       t
     )
   ) {
+    return false;
+  }
+  // Mirrors the server-side guard in creators-manage.js: a DOM scrape can hand
+  // back UI chrome ("checkbox label") instead of the actual show name.
+  if (
+    /^(checkbox|button|label|link|menu|dialog|image|avatar|loading|notifications?|home|episodes?|analytics|comments|monetize|settings|create|wizard)$/i.test(
+      t
+    )
+  ) {
+    return false;
+  }
+  if (/\b(checkbox|button|label|aria|role|tooltip|placeholder)\b/i.test(t)) {
     return false;
   }
   return true;
@@ -121,6 +135,11 @@ const LINKS = [
 export default function Layout() {
   const [session, setSession] = useState(null);
   const [show, setShow] = useState(null);
+  const [collapsed, setCollapsed] = useState(() => loadSidebarCollapsed());
+
+  useEffect(() => {
+    saveSidebarCollapsed(collapsed);
+  }, [collapsed]);
 
   const refresh = () => {
     api
@@ -151,12 +170,20 @@ export default function Layout() {
       ? show.imageUrl
       : null;
 
+  const sessionLabel =
+    session == null ? "Verificando…" : session.ok ? "Sessão ok" : "Sessão ausente";
+  const sessionTone = session == null ? "" : session.ok ? "ok" : "bad";
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${collapsed ? "collapsed" : ""}`}>
+      <a className="skip-link" href="#main">
+        Pular para o conteúdo
+      </a>
       <aside className="sidebar">
         <div className="brand-block">
           <NavLink to="/" className="brand" title="Início">
-            Spotidraft
+            <Logo size={24} />
+            <span className="brand-word">Spotidraft</span>
           </NavLink>
           {programName ? (
             <a
@@ -164,7 +191,7 @@ export default function Layout() {
               href={creatorsHome}
               target="_blank"
               rel="noreferrer"
-              title="Abrir no Spotify for Creators"
+              title={`${programName} — abrir no Spotify for Creators`}
             >
               <span className="brand-show-avatar" aria-hidden="true">
                 {programImage ? (
@@ -182,6 +209,7 @@ export default function Layout() {
             </a>
           ) : null}
         </div>
+
         <nav className="nav" aria-label="Principal">
           {LINKS.map(({ to, label, Icon, end }) => (
             <NavLink
@@ -189,32 +217,70 @@ export default function Layout() {
               to={to}
               end={Boolean(end)}
               className={({ isActive }) => (isActive ? "active" : "")}
+              title={label}
             >
               <Icon />
-              <span>{label}</span>
+              <span className="nav-label">{label}</span>
             </NavLink>
           ))}
         </nav>
-      </aside>
-      <div className="main">
-        <header className="topbar">
-          <span className={`chip ${session?.ok ? "ok" : "bad"}`}>
-            {session?.ok ? "Sessão ok" : "Sessão ausente"}
-          </span>
-          <a
-            className="btn btn-accent"
-            href={spotifyHref}
-            target="_blank"
-            rel="noreferrer"
-            title="Abrir no Spotify for Creators"
+
+        <div className="sidebar-foot">
+          {/* Session status stays visible when collapsed — it's the one thing
+              that silently breaks every other action in the app. */}
+          <NavLink
+            to="/session"
+            className={`session-status ${sessionTone}`}
+            aria-busy={session == null}
+            title={
+              session?.ok
+                ? `${sessionLabel} · ${session.cookieCount} cookies`
+                : `${sessionLabel} — clique para renovar`
+            }
           >
-            Abrir no Spotify
-          </a>
-        </header>
-        <main className="content">
+            <span className="session-dot" aria-hidden="true" />
+            <span className="session-text">{sessionLabel}</span>
+          </NavLink>
+
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={() => setCollapsed((v) => !v)}
+            aria-expanded={!collapsed}
+            title={collapsed ? "Expandir menu" : "Recolher menu"}
+            aria-label={collapsed ? "Expandir menu" : "Recolher menu"}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d={collapsed ? "m9 6 6 6-6 6" : "m15 6-6 6 6 6"}
+              />
+            </svg>
+          </button>
+        </div>
+      </aside>
+
+      <div className="main">
+        <main className="content" id="main" tabIndex={-1}>
           <Outlet context={{ session, show, refreshSession: refresh }} />
         </main>
       </div>
+
+      {/* Floating, so it doesn't need a whole bar of chrome to itself. */}
+      <a
+        className="spotify-fab"
+        href={spotifyHref}
+        target="_blank"
+        rel="noreferrer"
+        title="Abrir no Spotify for Creators"
+      >
+        <IconSpotify />
+        <span className="spotify-fab-label">Abrir no Spotify</span>
+      </a>
     </div>
   );
 }
