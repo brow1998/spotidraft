@@ -13,9 +13,26 @@ const env = {
 };
 
 console.error(`Installing Chromium → ${dest}`);
+
+const isWin = process.platform === "win32";
 const r = spawnSync(
-  process.platform === "win32" ? "npx.cmd" : "npx",
+  isWin ? "npx.cmd" : "npx",
   ["playwright", "install", "chromium"],
-  { cwd: ROOT, env, stdio: "inherit" }
+  {
+    cwd: ROOT,
+    env,
+    stdio: "inherit",
+    // Node 22 refuses to spawn .cmd/.bat directly (CVE-2024-27980), failing
+    // with EINVAL. Without this the Windows build dies here every time.
+    shell: isWin,
+  }
 );
+
+if (r.error) {
+  console.error(`[browsers] falhou ao executar npx: ${r.error.message}`);
+  process.exit(1);
+}
+if (r.status !== 0) {
+  console.error(`[browsers] npx playwright install saiu com código ${r.status}`);
+}
 process.exit(r.status ?? 1);
