@@ -110,5 +110,6 @@
       "oneClick": true,
       "perMachine": false
     }
-  }
+  },
+  "license": "MIT"
 }

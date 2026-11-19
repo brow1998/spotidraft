@@ -1,28 +1,29 @@
 # Spotidraft
 
-YouTube (vídeo / playlist / canal) → **drafts** no [Spotify for Creators](https://creators.spotify.com/).
+[![ci](https://github.com/brow1998/spotidraft/actions/workflows/ci.yml/badge.svg)](https://github.com/brow1998/spotidraft/actions/workflows/ci.yml)
 
-CLI + UI web local. Default: sempre draft (nunca publica sozinho).
+YouTube (a video, a playlist or a whole channel) → **drafts** on
+[Spotify for Creators](https://creators.spotify.com/).
 
-## O que faz
+A CLI, a local web UI and a desktop app. It only ever creates drafts; it never publishes on its own.
 
-- **Home** — canais memorizados, recentes (infinite scroll), playlists, fila → Spotify
-- **Importar** — cola qualquer URL solta do YouTube
-- **Progresso** — barras ao vivo (download e envio), passo atual e log técnico
-- **Spotify** — drafts no Creators (cache + atualizar)
-- **Sessão** — cola o curl de login do Creators
+## What it does
 
-Download e envio rodam **sobrepostos**: o vídeo 1 sobe enquanto o 2 baixa. Cada
-etapa tem faixas paralelas configuráveis, e o arquivo local é apagado assim que
-o rascunho existe no Spotify.
+- **Home**: remembered channels, recent uploads (infinite scroll), playlists, queue → Spotify
+- **Import**: paste any YouTube URL
+- **Progress**: live bars for download and upload, the current step and a technical log
+- **Spotify**: drafts on Creators (cached, with refresh)
+- **Session**: paste the Creators login cURL
 
-## Requisitos
+Downloads and uploads **overlap**: video 1 uploads while video 2 downloads. Each stage runs in
+configurable parallel lanes, and the local file is deleted as soon as the draft exists on Spotify.
 
-- Node.js **≥ 22**
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) no `PATH` (ou `YT_DLP=…`)
-- Chromium do Playwright (`npx playwright install chromium`)
-- **ffmpeg** no `PATH` — necessário para juntar áudio+vídeo. Sem ele, só o modo
-  "só áudio" funciona.
+## Requirements
+
+- Node.js **22 or later**
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) on the `PATH` (or `YT_DLP=…`)
+- Playwright's Chromium (`npx playwright install chromium`)
+- **ffmpeg** on the `PATH`, to merge audio and video. Without it, only audio-only mode works.
 
 ## Setup
 
@@ -34,79 +35,79 @@ npx playwright install chromium
 npm --prefix web install
 ```
 
-Sessão Creators (curl do DevTools ou pela UI **Sessão**):
+Creators session (a cURL copied from DevTools, or through the **Session** screen):
 
 ```bash
 node bin/spotidraft.js import-curl ./curl.txt
 ```
 
-## UI web
+## Web UI
 
 ```bash
-# terminal 1 — API
+# terminal 1: API
 npm run server
 
-# terminal 2 — Vite (proxy /api → :8787)
+# terminal 2: Vite (proxies /api to :8787)
 npm run dev:web
 ```
 
-Abra http://127.0.0.1:5173
+Open <http://127.0.0.1:5173>.
 
-Produção local (API serve o build):
+Local production build (the API serves it):
 
 ```bash
 npm run build:web && npm run server
 # http://127.0.0.1:8787
 ```
 
-### Desenvolver contra a sessão do app desktop
+### Developing against the desktop app's session
 
-Se você já usa o app Electron, `npm run dev:server` aponta o servidor para os
-**mesmos** dados e cookies dele — nada de colar cURL de novo. Também resolve o
-`yt-dlp` do `vendor/` (ou do app instalado), o que evita o `spawn yt-dlp ENOENT`
-quando ele não está no `PATH`.
+If you already use the Electron app, `npm run dev:server` points the server at **the same** data
+and cookies, so there's no cURL to paste again. It also picks up the `yt-dlp` from `vendor/` (or
+from the installed app), which avoids `spawn yt-dlp ENOENT` when it isn't on the `PATH`.
 
 ```bash
 npm run build:web && npm run dev:server
 # http://127.0.0.1:8787
 ```
 
-> Não rode o app Electron e o `dev:server` enviando episódios ao mesmo tempo: o
-> Chromium tranca o diretório de perfil, e o segundo fica na fila até liberar.
+> Don't run the Electron app and `dev:server` uploading episodes at the same time: Chromium locks
+> the profile directory, and the second one waits in line until it's released.
 
-## App desktop (Electron)
+## Desktop app (Electron)
 
-Para o time usar **sem instalar Node** — um instalador por OS:
+For a team to use it **without installing Node**, one installer per OS:
 
-| OS | Artefato | Como gerar |
-|----|----------|------------|
-| Linux | `.AppImage` | `npm run electron:dist:linux` (daqui no WSL funciona) |
-| Windows | `.exe` (NSIS) | `npm run electron:dist:win` **no Windows** (ou CI) |
-| macOS | `.dmg` | `npm run electron:dist:mac` **no Mac** (ou CI) |
+| OS | Artifact | How to build |
+|----|----------|--------------|
+| Linux | `.AppImage` | `npm run electron:dist:linux` (works from WSL) |
+| Windows | `.exe` (NSIS) | `npm run electron:dist:win` **on Windows** (or CI) |
+| macOS | `.dmg` | `npm run electron:dist:mac` **on a Mac** (or CI) |
 
-**Melhor caminho pros 3 de uma vez:** GitHub Actions  
-Actions → **Desktop builds** → *Run workflow* (ou tag `v0.1.0`).  
-Sobe artefatos `spotidraft-linux` / `spotidraft-win` / `spotidraft-mac`.
+**All three at once:** Actions → **Desktop builds** → *Run workflow* (or push a `v0.1.0` tag). It
+uploads the `spotidraft-linux`, `spotidraft-win` and `spotidraft-mac` artifacts.
 
 ```bash
 npm install
-npm run electron:dist:linux   # local neste WSL
+npm run electron:dist:linux
 ```
 
-Dev com janela Electron:
+Develop with an Electron window:
 
 ```bash
 npm run electron:dev
 ```
 
-Dados da sessão ficam em:
+Session data lives in:
+
 - Linux: `~/.config/Spotidraft/`
 - macOS: `~/Library/Application Support/Spotidraft/`
-- Windows: `%APPDATA%\\Spotidraft\\`
+- Windows: `%APPDATA%\Spotidraft\`
 
-> Cross-compile: no Linux **não** dá pra fazer DMG Mac de verdade; Windows às vezes com Wine, mas é frágil. Use CI ou a máquina do OS alvo.
+> Cross-compiling: Linux can't build a real macOS DMG, and Windows builds under Wine are fragile.
+> Use CI or a machine running the target OS.
 >
-> Mac sem notarização da Apple: o Gatekeeper avisa na 1ª abertura (botão direito → Abrir).
+> The macOS build isn't notarized, so Gatekeeper warns on first launch (right-click → Open).
 
 ## CLI
 
@@ -115,46 +116,49 @@ node bin/spotidraft.js ingest "URL"
 node bin/spotidraft.js status
 ```
 
-## Testes
+## Tests
 
 ```bash
 npm test
 ```
 
-Cobertura: lógica pura e o acesso ao SQLite — parsing de progresso do yt-dlp,
-cálculo de progresso do job, serialização SSE, classificação de erro do
-Creators, política de requeue, limpeza de disco e as faixas de concorrência.
-Os fluxos que dirigem o browser continuam sendo verificados manualmente.
+Covers the pure logic and the SQLite access: yt-dlp progress parsing, job progress, SSE
+serialization, Creators error classification, the re-queue policy, disk cleanup and the
+concurrency lanes. The flows that drive the browser are still verified by hand.
 
-## Config / dados locais (não vão pro git)
+## Local config and data (not in git)
 
-| Caminho | Conteúdo |
-|---------|----------|
-| `data/` | config, fila SQLite, downloads, cache Creators (modo CLI/server) |
-| `profiles/` | browser profile / cookies (modo CLI/server) |
-| `vendor/` | yt-dlp + Chromium empacotados (gerados no prepare) |
+| Path | Contents |
+|------|----------|
+| `data/` | config, SQLite queue, downloads, Creators cache (CLI and server modes) |
+| `profiles/` | browser profile and cookies (CLI and server modes) |
+| `vendor/` | bundled yt-dlp and Chromium (generated by the prepare step) |
 
-### Variáveis de ambiente
+### Environment variables
 
-| Variável | Padrão | Para quê |
-|----------|--------|----------|
-| `PORT` | `8787` | Porta da API/UI |
-| `YT_LANG` | `pt` | Idioma dos títulos. O yt-dlp usa `pt`, não `pt-BR` |
-| `YT_DLP` | auto | Caminho do binário do yt-dlp |
-| `SPOTIDRAFT_DOWNLOAD_LANES` | `2` | Downloads simultâneos (teto 4) |
-| `SPOTIDRAFT_UPLOAD_LANES` | `2` | Envios simultâneos ao Creators (teto 5) |
-| `SPOTIDRAFT_DATA` | `data/` | Config, fila SQLite, downloads, caches |
-| `SPOTIDRAFT_PROFILE` | `profiles/creators` | Perfil do browser e `cookies.json` |
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PORT` | `8787` | API and UI port |
+| `YT_LANG` | `pt` | Title language. yt-dlp uses `pt`, not `pt-BR` |
+| `YT_DLP` | auto | Path to the yt-dlp binary |
+| `SPOTIDRAFT_DOWNLOAD_LANES` | `2` | Concurrent downloads (max 4) |
+| `SPOTIDRAFT_UPLOAD_LANES` | `2` | Concurrent uploads to Creators (max 5) |
+| `SPOTIDRAFT_DATA` | `data/` | Config, SQLite queue, downloads, caches |
+| `SPOTIDRAFT_PROFILE` | `profiles/creators` | Browser profile and `cookies.json` |
 
-As faixas são conservadoras de propósito. Medições e o porquê dos tetos estão em
+The lanes are conservative on purpose. Measurements and the reasons for the ceilings are in
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-## Deploy / 4K longo
+## Long 4K videos
 
-Ver [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Resumo: vídeos de horas em 4K **não cabem** em free tier de cloud; use o **app Electron local**.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). In short: hours-long 4K videos **don't fit** a cloud
+free tier; use the local desktop app.
 
-## Avisos
+## Notes
 
-- Automação de UI no Creators; cookies são segredo local.
-- Respeite ToS do YouTube / Spotify e direitos do conteúdo.
-- **ffmpeg** no PATH ajuda o yt-dlp a juntar áudio+vídeo; em máquinas sem ffmpeg, prefira “só áudio” ou instale ffmpeg.
+- This automates the Creators UI; the cookies are a local secret.
+- Respect YouTube's and Spotify's terms of service and the rights to the content.
+
+## License
+
+[MIT](LICENSE)

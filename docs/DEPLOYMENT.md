@@ -1,101 +1,103 @@
-# Deploy e limites (Spotidraft)
+# Deployment and limits
 
-## Realidade: 3h em 4K
+## The reality: 3 hours in 4K
 
-Um vídeo ~3h em 4K pode passar de **tens de GB** (bitrate / codec). O Spotidraft:
+A video of about 3 hours in 4K can exceed **tens of GB**, depending on bitrate and codec. Spotidraft:
 
-1. baixa com yt-dlp  
-2. empacota  
-3. sobe via browser (Playwright) pro Creators  
+1. downloads it with yt-dlp
+2. packages it
+3. uploads it through a browser (Playwright) to Creators
 
-Isso precisa de **disco grande**, **CPU/rede estáveis** e **sessão longa** — o oposto do free tier típico.
+That needs **a large disk**, **stable CPU and network** and **a long session**: the opposite of a
+typical free tier.
 
-| Opção | Free tier? | Serve 3h 4K? | Notas |
-|-------|------------|--------------|--------|
-| **Local (recomendado)** | — | Sim | Seu disco/GPU/rede; cookies no `profiles/` |
-| Binário desktop (Electron/Tauri) | — | Sim | Empacota UI+API; ainda roda na máquina |
-| Railway / Render / Fly free | Frágil | Não | Disco efêmero, timeout, RAM baixa |
-| Cloudflare Workers / Vercel | Sim | Não | Sem download longo nem Playwright pesado |
-| VPS barato (Hetzner etc.) | Pago | Talvez | Disco + tempo de upload; cookies sensíveis |
-| GPU cloud free credits | Limitado | Arriscado | Custo sobe rápido com 4K |
+| Option | Free tier? | Handles 3 h in 4K? | Notes |
+|--------|------------|--------------------|-------|
+| **Local (recommended)** | n/a | Yes | Your disk, GPU and network; cookies in `profiles/` |
+| Desktop binary (Electron) | n/a | Yes | Bundles UI and API; still runs on the user's machine |
+| Railway / Render / Fly free | Fragile | No | Ephemeral disk, timeouts, little RAM |
+| Cloudflare Workers / Vercel | Yes | No | No long downloads, no heavy Playwright |
+| Cheap VPS (Hetzner etc.) | Paid | Maybe | Disk plus upload time; sensitive cookies |
+| GPU cloud free credits | Limited | Risky | Cost climbs fast with 4K |
 
-**Conclusão:** free tier na nuvem **não** é caminho sério para 3h 4K. Local sim. Cloud só com disco/VM pagos e aceitando risco de sessão/cookies.
+**Bottom line:** a cloud free tier is not a serious option for 3 hours of 4K. Local is. The cloud
+only works with a paid disk or VM, and accepting the session and cookie risk.
 
-## Uso de disco na prática
+## Disk use in practice
 
-O padrão de qualidade é **1080p**, não "melhor disponível". Medido num vídeo de
-44 min do mesmo canal:
+The default quality is **1080p**, not "best available". Measured on a 44-minute video from the
+same channel:
 
-| Qualidade | Tamanho |
-|-----------|---------|
-| Melhor (4K) | 2166 MB |
-| 1080p (padrão) | 401 MB |
+| Quality | Size |
+|---------|------|
+| Best (4K) | 2,166 MB |
+| 1080p (default) | 401 MB |
 | 720p | 244 MB |
 
-São 5,4× menos bytes para baixar, guardar e subir — e o Creators recodifica de
-qualquer forma. "Melhor disponível" continua no seletor de opções para quem
-precisar.
+That is 5.4× fewer bytes to download, store and upload, and Creators re-encodes anyway. "Best
+available" is still in the options for whoever needs it.
 
-O arquivo de vídeo é **apagado assim que o rascunho existe no Spotify**
-(`src/cleanup.js`). Os sidecars ficam: o `.info.json` alimenta duração e
-descrição na fila e a thumbnail tem dezenas de KB. Uploads que falham mantêm o
-arquivo, para reenviar sem baixar de novo.
+The video file is **deleted as soon as the draft exists on Spotify** (`src/cleanup.js`). The
+sidecars stay: the `.info.json` feeds duration and description in the queue, and the thumbnail is a
+few dozen KB. Failed uploads keep the file, so they can be retried without downloading again.
 
-## Downloads simultâneos
+## Concurrent downloads
 
-Cada invocação do yt-dlp baixa um vídeo e tem o próprio arquivo de archive, o
-que permite rodar downloads em paralelo. O padrão é **2 faixas**
-(`SPOTIDRAFT_DOWNLOAD_LANES`, teto de 4).
+Each yt-dlp call downloads one video and has its own archive file, which lets downloads run in
+parallel. The default is **2 lanes** (`SPOTIDRAFT_DOWNLOAD_LANES`, max 4).
 
-Medido com dois vídeos do mesmo canal, a 720p, ordem invertida para não
-favorecer nenhum cenário:
+Measured with two videos from the same channel at 720p, in reversed order so neither scenario is
+favoured:
 
-| Cenário | Total | Por vídeo |
-|---------|-------|-----------|
-| Paralelo (2 faixas) | 46 s | 45 s, 46 s |
-| Sequencial | 70 s | 34 s, 36 s |
+| Scenario | Total | Per video |
+|----------|-------|-----------|
+| Parallel (2 lanes) | 46 s | 45 s, 46 s |
+| Sequential | 70 s | 34 s, 36 s |
 
-**1,52×** — não 2×, porque a banda é compartilhada: cada download fica ~30 %
-mais lento. O ganho vem de sobrepor os 10–15 s de extração de metadados e de
-aproveitar banda ociosa.
+**1.52×**, not 2×, because bandwidth is shared: each download gets about 30% slower. The gain comes
+from overlapping the 10 to 15 seconds of metadata extraction and using idle bandwidth.
 
-Sobre o `HTTP 403` que o extractor devolve: em teste controlado ele **não** foi
-causado por concorrência, e sim por *repetição* — rebaixar os mesmos vídeos
-poucos segundos depois. Rodar as duas faixas primeiro, em vídeos novos,
-funcionou (2/2). Ainda assim o teto de 4 faixas existe porque cada faixa traz um
-ffmpeg disputando CPU no merge.
+About the `HTTP 403` the extractor sometimes returns: in a controlled test it was **not** caused by
+concurrency but by *repetition*, re-downloading the same videos a few seconds later. Running both
+lanes first, on fresh videos, worked (2 of 2). The 4-lane ceiling exists anyway because each lane
+brings an ffmpeg competing for CPU during the merge.
 
-Ressalva de fim a fim: os uploads ao Creators são estritamente seriais (um
-browser, uma sessão) e costumam ser a etapa mais lenta. Num lote grande o tempo
-total tende a ser limitado pelo upload, então boa parte do ganho de download é
-absorvida pela fila de envio. Ele aparece de verdade em vídeos grandes, em
-`audioOnly`, ou quando o YouTube está lento.
+End to end, uploads to Creators are usually the slowest step (see `SPOTIDRAFT_UPLOAD_LANES` in the
+README). In a large batch, total time tends to be bound by uploads, so much of the download gain is
+absorbed by the upload queue. It really shows on large videos, in audio-only mode, or when YouTube
+is slow.
 
-## Caminhos seguintes
+## Ways forward
 
-### A) Executável local (Electron) — preferido
+### A) Local executable (Electron), preferred
 
-| Comando | Saída |
+| Command | Output |
 |---------|--------|
 | `npm run electron:dist:linux` | `release/*.AppImage` |
-| `npm run electron:dist:win` | `release/*Setup*.exe` (rode no Windows) |
-| `npm run electron:dist:mac` | `release/*.dmg` (rode no Mac) |
+| `npm run electron:dist:win` | `release/*Setup*.exe` (run on Windows) |
+| `npm run electron:dist:mac` | `release/*.dmg` (run on a Mac) |
 
-Ou **GitHub Actions** → workflow *Desktop builds* (matrix ubuntu/windows/macos).
+Or **GitHub Actions** → the *Desktop builds* workflow (ubuntu/windows/macos matrix).
 
-O app sobe a API embutida, abre a UI e guarda sessão em `userData` do SO.  
-Empacota **yt-dlp** + **Chromium (Playwright)** — instalador grande (~200–400 MB), mas o time não precisa de Node.
+The app starts the embedded API, opens the UI and keeps the session in the OS `userData` folder. It
+bundles **yt-dlp** and **Chromium (Playwright)**: a large installer (about 200 to 400 MB), but no
+Node needed.
 
-Dependência externa útil: **ffmpeg** no PATH (merge de formatos). Sem ffmpeg, use “só áudio” ou instale ffmpeg no PC.
+A useful external dependency: **ffmpeg** on the PATH (merges formats). Without it, use audio-only
+or install ffmpeg.
 
-### B) Hospedagem “leve” (só meta / fila)
+### B) Light hosting (metadata and queue only)
 
-Possível no free tier: listar canal, montar fila, **não** baixar 4K no servidor — o download/upload roda no desktop do usuário (agente local). Arquitetura híbrida; mais trabalho.
+Possible on a free tier: list channels and build the queue, but **don't** download 4K on the
+server; download and upload run on the user's desktop (a local agent). A hybrid architecture, and
+more work.
 
-### C) VPS pago mínimo
+### C) Minimal paid VPS
 
-Se precisar remoto: 1 VPS com ≥100–200 GB SSD, processar um episódio por vez, limpar `data/downloads` depois do draft. Ainda não é “free”.
+If it has to be remote: one VPS with at least 100 to 200 GB of SSD, one episode at a time, cleaning
+`data/downloads` after each draft. Still not free.
 
-## Segurança
+## Security
 
-Nunca commitir `profiles/`, `data/`, curl de sessão. Em cloud, cookies de Creators são alto risco (conta do show).
+Never commit `profiles/`, `data/` or a session cURL. In the cloud, Creators cookies are high risk:
+they are the show's account.
